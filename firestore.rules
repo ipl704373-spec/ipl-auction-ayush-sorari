@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isValidId(userId);
+      allow create, update: if isValidId(userId)
+        && incoming().uid is string
+        && incoming().username is string
+        && incoming().username.size() <= 64;
+      allow delete: if false;
+    }
+
+    // Rooms Collection for Live Auction & Match Multiplayer
+    match /rooms/{roomCode} {
+      allow read: if isValidId(roomCode);
+      allow create: if isValidId(roomCode)
+        && incoming().code is string
+        && incoming().name is string
+        && incoming().hostUserId is string
+        && incoming().status is string;
+      allow update: if isValidId(roomCode)
+        && incoming().code is string
+        && incoming().status is string;
+      allow delete: if isValidId(roomCode);
+    }
+  }
+}

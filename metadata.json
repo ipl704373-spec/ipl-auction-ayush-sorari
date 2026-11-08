@@ -1,0 +1,6 @@
+{
+  "name": "IPL Auction & Tournament Arena",
+  "description": "Real-Feel IPL Auction and Tournament Manager featuring live multiplayer rooms, AI bidding bots, custom franchises, purse management, and realistic cricket match simulation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

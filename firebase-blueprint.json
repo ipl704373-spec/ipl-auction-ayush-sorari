@@ -1,0 +1,93 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with persistent purse balance and tournament record",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Unique user ID",
+          "maxLength": 128
+        },
+        "username": {
+          "type": "string",
+          "description": "Display username",
+          "maxLength": 64
+        },
+        "purseBalance": {
+          "type": "number",
+          "description": "Purse bonus balance"
+        },
+        "trophiesWon": {
+          "type": "number",
+          "description": "Count of tournaments won"
+        },
+        "matchesPlayed": {
+          "type": "number",
+          "description": "Count of matches played"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Account creation timestamp"
+        }
+      },
+      "required": ["uid", "username"]
+    },
+    "Room": {
+      "title": "Room",
+      "description": "Live IPL auction and tournament multiplayer room",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "6-character unique room code",
+          "maxLength": 10
+        },
+        "name": {
+          "type": "string",
+          "description": "Room display name",
+          "maxLength": 128
+        },
+        "hostUserId": {
+          "type": "string",
+          "description": "User ID of room creator",
+          "maxLength": 128
+        },
+        "mode": {
+          "type": "string",
+          "description": "Solo vs Full Multiplayer mode",
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "description": "Room status: LOBBY, AUCTION, SQUADS, TOURNAMENT, COMPLETED",
+          "maxLength": 32
+        },
+        "lastUpdated": {
+          "type": "number",
+          "description": "Epoch timestamp of last update"
+        },
+        "stateJson": {
+          "type": "string",
+          "description": "Serialized full room state"
+        }
+      },
+      "required": ["code", "name", "hostUserId", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/User"
+      },
+      "description": "User profiles indexed by UID"
+    },
+    "/rooms/{roomCode}": {
+      "schema": {
+        "$ref": "#/entities/Room"
+      },
+      "description": "Active tournament and auction rooms indexed by 6-digit code"
+    }
+  }
+}
