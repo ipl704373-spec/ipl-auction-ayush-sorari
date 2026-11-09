@@ -6,7 +6,8 @@
 import React from 'react';
 import { RoomState } from '../types/cricket';
 import { calculatePointsTable, getTournamentCapLeaders } from '../services/matchSimulation';
-import { Trophy, Award, TrendingUp, Shield, Flame, Sparkles } from 'lucide-react';
+import { formatCurrency } from '../data/iplFranchises';
+import { Trophy, Award, TrendingUp, Shield, Flame, Sparkles, Coins } from 'lucide-react';
 
 interface TournamentTableProps {
   room: RoomState;
@@ -21,17 +22,28 @@ export const TournamentTable: React.FC<TournamentTableProps> = ({
   const { orangeCapLeader, orangeCapTop5, purpleCapLeader, purpleCapTop5 } =
     getTournamentCapLeaders(room.matches);
 
+  const totalPrizeDisbursed = room.matches.reduce((sum, m) => {
+    return sum + (m.team1Prize?.totalPrize || 0) + (m.team2Prize?.totalPrize || 0);
+  }, 0);
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 space-y-6">
       
       {/* Header Banner */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/90 p-4 backdrop-blur-md">
         <div>
-          <h1 className="text-xl sm:text-2xl font-extrabold text-white font-display uppercase tracking-wide flex items-center gap-2">
-            <Trophy className="w-5 h-5 text-amber-400" /> League Standings & Caps
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl sm:text-2xl font-extrabold text-white font-display uppercase tracking-wide flex items-center gap-2">
+              <Trophy className="w-5 h-5 text-amber-400" /> League Standings & Caps
+            </h1>
+            {totalPrizeDisbursed > 0 && (
+              <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded font-mono">
+                <Coins className="w-3.5 h-3.5" /> {formatCurrency(totalPrizeDisbursed)} Prize Pool Disbursed
+              </span>
+            )}
+          </div>
           <p className="text-xs text-slate-400 mt-0.5">
-            Real-time NRR calculation, Orange Cap & Purple Cap awards race
+            Real-time NRR calculation, Orange Cap & Purple Cap awards race, and franchise purse growth
           </p>
         </div>
 
@@ -182,12 +194,14 @@ export const TournamentTable: React.FC<TournamentTableProps> = ({
                 <th className="py-3 px-3 text-center">T</th>
                 <th className="py-3 px-4 text-center font-bold text-white">Pts</th>
                 <th className="py-3 px-4 text-right">NRR</th>
+                <th className="py-3 px-4 text-right text-emerald-400">Purse Balance</th>
               </tr>
             </thead>
             <tbody>
               {pointsTable.map((row, index) => {
                 const isPlayoffZone = index < 4;
-                const isUser = room.teams.find((t) => t.id === row.teamId)?.isUserTeam;
+                const franchise = room.teams.find((t) => t.id === row.teamId);
+                const isUser = franchise?.isUserTeam;
 
                 return (
                   <tr
@@ -235,6 +249,9 @@ export const TournamentTable: React.FC<TournamentTableProps> = ({
                       <span className={row.nrr >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
                         {row.nrr > 0 ? `+${row.nrr.toFixed(3)}` : row.nrr.toFixed(3)}
                       </span>
+                    </td>
+                    <td className="py-3.5 px-4 text-right font-mono font-bold text-emerald-400">
+                      {formatCurrency(franchise?.budget || 0)}
                     </td>
                   </tr>
                 );

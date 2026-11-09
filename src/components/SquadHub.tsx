@@ -7,7 +7,7 @@ import React, { useState } from 'react';
 import { RoomState, Team, Player } from '../types/cricket';
 import { formatCurrency } from '../data/iplFranchises';
 import { getOrAutoSelectPlayingXI } from '../services/matchSimulation';
-import { saveRoom } from '../services/storage';
+import { saveRoom, getCurrentUser } from '../services/storage';
 import {
   Shield,
   Star,
@@ -32,12 +32,20 @@ export const SquadHub: React.FC<SquadHubProps> = ({
   onUpdateRoom,
   onNavigateToMatches
 }) => {
-  const userTeam = room.teams.find((t) => t.isUserTeam) || room.teams[0];
+  const currentUser = getCurrentUser();
+  const userTeam =
+    room.teams.find((t) => t.userId === currentUser?.id) ||
+    room.teams.find((t) => t.isUserTeam) ||
+    room.teams[0];
+
   const [selectedTeamId, setSelectedTeamId] = useState(userTeam.id);
   const [roleFilter, setRoleFilter] = useState<'ALL' | 'BATSMAN' | 'BOWLER' | 'ALL_ROUNDER' | 'WICKET_KEEPER'>('ALL');
   const [selectedPlayerModal, setSelectedPlayerModal] = useState<Player | null>(null);
 
   const currentViewTeam = room.teams.find((t) => t.id === selectedTeamId) || userTeam;
+  const isMyTeam =
+    currentViewTeam.userId === currentUser?.id ||
+    (currentViewTeam.isUserTeam && (!currentViewTeam.userId || currentViewTeam.userId === currentUser?.id));
 
   // Selected Playing XI IDs
   const activePlayingXI = getOrAutoSelectPlayingXI(currentViewTeam);
@@ -60,7 +68,7 @@ export const SquadHub: React.FC<SquadHubProps> = ({
   const isXIValid = playingXIIds.length === 11 && overseasCountInXI <= 4;
 
   const togglePlayerInXI = (playerId: string) => {
-    if (!currentViewTeam.isUserTeam) return; // Only edit user team
+    if (!isMyTeam) return; // Only edit your own franchise team
 
     const player = currentViewTeam.players.find((p) => p.id === playerId);
     if (!player) return;
@@ -131,7 +139,7 @@ export const SquadHub: React.FC<SquadHubProps> = ({
               {currentViewTeam.name} Roster
             </h1>
             <p className="text-xs text-slate-400">
-              {currentViewTeam.isUserTeam ? 'Your Team · Manage Squad & XI' : 'Opponent Franchise Profile'}
+              {isMyTeam ? 'Your Team · Manage Squad & Playing XI' : 'Franchise Profile'}
             </p>
           </div>
         </div>

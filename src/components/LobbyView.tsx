@@ -4,12 +4,12 @@
  */
 
 import React, { useState } from 'react';
-import { UserAccount, RoomState, Team, TournamentFormat, PitchCondition } from '../types/cricket';
+import { UserAccount, RoomState, Team, TournamentFormat, PitchCondition, AuctionLogEntry } from '../types/cricket';
 import { OFFICIAL_FRANCHISES, formatCurrency } from '../data/iplFranchises';
 import { INITIAL_PLAYERS } from '../data/mockPlayers';
-import { generateRoomCode, saveRoom, getRoomByCode } from '../services/storage';
+import { generateRoomCode, saveRoom, getRoomByCode, getStoredRooms, deleteUserRoom } from '../services/storage';
 import { generateTournamentFixtures } from '../services/matchSimulation';
-import { Users, Plus, LogIn, Sparkles, Copy, Check, Play, Shield, Globe, Award, Swords } from 'lucide-react';
+import { Users, Plus, LogIn, Sparkles, Copy, Check, Play, Shield, Globe, Award, Swords, Trash2, Calendar, Wallet } from 'lucide-react';
 
 interface LobbyViewProps {
   currentUser: UserAccount | null;
@@ -45,17 +45,39 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const [copiedCode, setCopiedCode] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // 6-digit Room code generated for hosting
+  const [hostedRoomCode, setHostedRoomCode] = useState<string>(() => generateRoomCode());
+  const [copiedHostedCode, setCopiedHostedCode] = useState(false);
+
   const handleCopyCode = (code: string) => {
     navigator.clipboard.writeText(code);
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
+  const handleCopyHostedCode = () => {
+    navigator.clipboard.writeText(hostedRoomCode);
+    setCopiedHostedCode(true);
+    setTimeout(() => setCopiedHostedCode(false), 2000);
+  };
+
+  const handleRegenerateCode = () => {
+    const code = generateRoomCode();
+    setHostedRoomCode(code);
+  };
+
+  const handleSwitchToHostTab = () => {
+    setTab('CREATE');
+    // Generate a fresh 6-digit room code on clicking host new room
+    const code = generateRoomCode();
+    setHostedRoomCode(code);
+  };
+
   const handleCreateRoom = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
 
-    const roomCode = generateRoomCode();
+    const roomCode = hostedRoomCode || generateRoomCode();
     const userId = currentUser ? currentUser.id : `guest-${Date.now()}`;
 
     // Build user's team
@@ -85,16 +107,17 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
       };
     }
 
-    // Populate bot franchises for remaining spots
+    // Populate remaining franchise spots
+    const isMultiplayer = gameMode === 'FULL_MULTIPLAYER';
     const otherFranchises = OFFICIAL_FRANCHISES.filter((f) => f.id !== selectedPresetFranchiseId);
-    const botTeams: Team[] = otherFranchises.slice(0, 7).map((f) => ({
+    const remainingTeams: Team[] = otherFranchises.slice(0, 7).map((f) => ({
       ...f,
       isUserTeam: false,
-      isBot: true,
+      isBot: !isMultiplayer, // STRICT: In full multiplayer, NO bots exist!
       players: []
     }));
 
-    const allTeams = [userTeam, ...botTeams];
+    const allTeams = [userTeam, ...remainingTeams];
 
     // Initialize players pool
     const playersPool = INITIAL_PLAYERS.map((p, idx) => ({
@@ -127,7 +150,9 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           playerId: playersPool[0].id,
           playerName: playersPool[0].name,
           amount: playersPool[0].basePrice,
-          message: `🎙️ Welcome to the ${roomName}! Lot #1 is ${playersPool[0].name} (${playersPool[0].role}) at base price ${formatCurrency(playersPool[0].basePrice)}.`
+          message: isMultiplayer
+            ? `🎙️ Welcome to the ${roomName} (Full Multiplayer Mode)! Room Code: ${roomCode}. Share with friends to join. Bot bidding is DISABLED — only real players will bid.`
+            : `🎙️ Welcome to the ${roomName}! Lot #1 is ${playersPool[0].name} (${playersPool[0].role}) at base price ${formatCurrency(playersPool[0].basePrice)}.`
         }
       ],
       matches: fixtures,
@@ -154,10 +179,62 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
         setErrorMsg(`Room "${code}" not found. Verify the code or create a new room.`);
         return;
       }
+
+      // In FULL_MULTIPLAYER: assign joining real player to an available franchise table if not yet assigned
+      if (currentUser) {
+        const userExistingTeam = room.teams.find((t) => t.userId === currentUser.id);
+        if (!userExistingTeam) {
+          // Find an available franchise table not claimed by the host or other registered users
+          const availableIndex = room.teams.findIndex(
+            (t) => !t.userId || (t.userId !== room.hostUserId && t.userId.startsWith('guest-'))
+          );
+          if (availableIndex !== -1) {
+            const updatedTeams = [...room.teams];
+            const claimedTeam: Team = {
+              ...updatedTeams[availableIndex],
+              userId: currentUser.id,
+              isBot: false,
+              isUserTeam: false
+            };
+            updatedTeams[availableIndex] = claimedTeam;
+
+            const joinAnnouncement: AuctionLogEntry = {
+              id: `log-join-${Date.now()}`,
+              timestamp: Date.now(),
+              type: 'ANNOUNCEMENT',
+              playerId: room.playersPool[room.currentPlayerIndex]?.id || 'join',
+              playerName: currentUser.username,
+              amount: 0,
+              message: `👋 Real Player ${currentUser.username} has joined room ${code} and taken the ${claimedTeam.name} table!`
+            };
+
+            const updatedRoom: RoomState = {
+              ...room,
+              teams: updatedTeams,
+              auctionLogs: [joinAnnouncement, ...room.auctionLogs.slice(0, 48)],
+              lastUpdated: Date.now()
+            };
+
+            saveRoom(updatedRoom);
+            onEnterRoom(updatedRoom);
+            return;
+          }
+        }
+      }
+
       onEnterRoom(room);
     } catch {
       setErrorMsg(`Could not connect to room "${code}". Please check your connection.`);
     }
+  };
+
+  const userSavedRooms = Object.values(getStoredRooms());
+
+  const handleDeleteSavedRoom = (code: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    deleteUserRoom(code);
+    // Force re-render
+    setJoinCodeInput((prev) => prev);
   };
 
   return (
@@ -168,17 +245,60 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
         <div className="absolute bottom-1/4 right-1/4 translate-x-1/2 translate-y-1/2 w-96 h-96 rounded-full bg-blue-600/5 blur-3xl" />
       </div>
 
-      <div className="relative w-full max-w-4xl rounded-2xl border border-slate-800 bg-slate-900/90 backdrop-blur-xl shadow-2xl p-6 sm:p-8">
+      <div className="relative w-full max-w-4xl rounded-2xl border border-slate-800 bg-slate-900/90 backdrop-blur-xl shadow-2xl p-6 sm:p-8 space-y-6">
         
+        {/* User Account Info Banner */}
+        {currentUser && (
+          <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-800 bg-slate-950/80 p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-amber-500 to-amber-700 text-slate-950 font-black text-lg shadow-md shadow-amber-500/20">
+                {currentUser.username.slice(0, 2).toUpperCase()}
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-extrabold text-white text-base font-display uppercase tracking-wide">
+                    {currentUser.username}
+                  </span>
+                  <span className="text-[10px] font-bold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded border border-amber-400/20 uppercase">
+                    Franchise Owner
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Progress is saved exclusively to this account &bull; Safe on logout
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 text-xs">
+              <div className="flex flex-col text-right">
+                <span className="text-slate-400 text-[11px] flex items-center justify-end gap-1">
+                  <Wallet className="w-3 h-3 text-amber-400" /> Wallet Balance
+                </span>
+                <span className="font-mono font-bold text-amber-400 text-sm">
+                  {formatCurrency(currentUser.purseBalance)}
+                </span>
+              </div>
+              <div className="hidden sm:flex flex-col text-right pl-4 border-l border-slate-800">
+                <span className="text-slate-400 text-[11px] flex items-center justify-end gap-1">
+                  <Award className="w-3 h-3 text-emerald-400" /> Trophies Won
+                </span>
+                <span className="font-mono font-bold text-emerald-400 text-sm">
+                  {currentUser.trophiesWon || 0}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Active room prompt if one exists */}
         {activeRoom && (
-          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
             <div className="flex items-center gap-3">
               <span className="flex h-3 w-3 rounded-full bg-amber-400 animate-ping" />
               <div>
                 <p className="text-xs font-bold text-amber-300 uppercase tracking-wider">Active Session in Progress</p>
                 <p className="text-sm font-semibold text-white">
-                  Room: <span className="font-mono text-amber-400">{activeRoom.code}</span> — {activeRoom.name}
+                  Room: <span className="font-mono text-amber-400 font-bold">{activeRoom.code}</span> — {activeRoom.name}
                 </p>
               </div>
             </div>
@@ -191,15 +311,65 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           </div>
         )}
 
+        {/* Saved Campaigns / Rooms for this Account */}
+        {userSavedRooms.length > 1 && (
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-amber-400" /> Your Saved Campaigns ({userSavedRooms.length})
+              </h3>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-48 overflow-y-auto pr-1">
+              {userSavedRooms.map((room) => (
+                <div
+                  key={room.code}
+                  onClick={() => onEnterRoom(room)}
+                  className={`group cursor-pointer rounded-lg border p-3 flex items-center justify-between transition-all ${
+                    activeRoom?.code === room.code
+                      ? 'border-amber-400/50 bg-amber-400/10'
+                      : 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="min-w-0 pr-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-bold text-amber-400 text-xs">{room.code}</span>
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">
+                        {room.status}
+                      </span>
+                    </div>
+                    <p className="text-xs font-bold text-white truncate mt-0.5">{room.name}</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeleteSavedRoom(room.code, e)}
+                      title="Delete Campaign"
+                      className="p-1.5 text-slate-500 hover:text-rose-400 transition-colors rounded hover:bg-slate-800"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      className="px-2.5 py-1 text-[11px] font-bold text-slate-950 bg-amber-400 group-hover:bg-amber-300 rounded transition-colors"
+                    >
+                      Resume
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Hero title banner */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-400 mb-3">
+        <div className="text-center pt-2">
+          <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-400 mb-2">
             <Sparkles className="w-3.5 h-3.5" /> Real-Time IPL Auction & Tournament Engine
           </div>
           <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white font-display uppercase">
             Create or Join Auction Room
           </h1>
-          <p className="mt-2 text-sm text-slate-400 max-w-xl mx-auto">
+          <p className="mt-1.5 text-sm text-slate-400 max-w-xl mx-auto">
             Experience the pulse of the IPL Mega Auction. Bid with live paddle physics, build your championship squad, and simulate tournament matches.
           </p>
         </div>
@@ -207,8 +377,9 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
         {/* Tab switch: Create vs Join */}
         <div className="grid grid-cols-2 gap-2 p-1.5 bg-slate-950 rounded-xl border border-slate-800 mb-8 max-w-md mx-auto">
           <button
-            onClick={() => setTab('CREATE')}
-            className={`py-2 px-4 rounded-lg font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 ${
+            type="button"
+            onClick={handleSwitchToHostTab}
+            className={`py-2.5 px-4 rounded-lg font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer ${
               tab === 'CREATE'
                 ? 'bg-amber-400 text-slate-950 shadow-md shadow-amber-400/20'
                 : 'text-slate-400 hover:text-white'
@@ -217,8 +388,9 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             <Plus className="w-4 h-4" /> Host New Room
           </button>
           <button
+            type="button"
             onClick={() => setTab('JOIN')}
-            className={`py-2 px-4 rounded-lg font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 ${
+            className={`py-2.5 px-4 rounded-lg font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer ${
               tab === 'JOIN'
                 ? 'bg-amber-400 text-slate-950 shadow-md shadow-amber-400/20'
                 : 'text-slate-400 hover:text-white'
@@ -238,6 +410,60 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
         {tab === 'CREATE' && (
           <form onSubmit={handleCreateRoom} className="space-y-6">
             
+            {/* GENERATED 6-DIGIT ROOM CODE BANNER */}
+            <div className="rounded-2xl border-2 border-amber-400/50 bg-gradient-to-r from-amber-500/15 via-slate-950 to-amber-500/10 p-5 shadow-xl shadow-amber-500/10">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="flex h-2.5 w-2.5 rounded-full bg-amber-400 animate-pulse" />
+                    <span className="text-xs font-black uppercase tracking-wider text-amber-300">
+                      Generated 6-Digit Room Code
+                    </span>
+                  </div>
+                  <div className="flex items-baseline gap-3">
+                    <span className="font-mono text-3xl sm:text-4xl font-black text-amber-400 tracking-widest drop-shadow-md">
+                      {hostedRoomCode}
+                    </span>
+                    <span className="text-xs text-slate-400 font-medium">
+                      (Code ready for opponent/friend)
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 mt-1 max-w-lg">
+                    Give this 6-digit code to the another person. They can enter it under <span className="font-bold text-amber-300">&ldquo;Enter 6-Digit Code&rdquo;</span> to join your room.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleCopyHostedCode}
+                    className="px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider bg-amber-400 hover:bg-amber-300 text-slate-950 shadow-md shadow-amber-400/20 transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {copiedHostedCode ? (
+                      <>
+                        <Check className="w-4 h-4 text-emerald-900" />
+                        <span>Copied Code!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-4 h-4" />
+                        <span>Copy 6-Digit Code</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleRegenerateCode}
+                    title="Generate a new 6-digit code"
+                    className="p-2.5 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {/* Mode selection: Solo vs Full Multiplayer */}
             <div>
               <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
@@ -432,9 +658,9 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             {/* Action CTA Button */}
             <button
               type="submit"
-              className="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-amber-400 via-amber-500 to-amber-600 hover:from-amber-300 hover:to-amber-500 text-slate-950 font-black text-sm uppercase tracking-wider shadow-lg shadow-amber-500/25 transition-all flex items-center justify-center gap-2"
+              className="w-full py-4 px-6 rounded-xl bg-gradient-to-r from-amber-400 via-amber-500 to-amber-600 hover:from-amber-300 hover:to-amber-500 text-slate-950 font-black text-sm uppercase tracking-wider shadow-lg shadow-amber-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
-              <Swords className="w-5 h-5" /> Launch IPL Auction Room
+              <Swords className="w-5 h-5" /> Launch Room {hostedRoomCode} & Enter Arena
             </button>
           </form>
         )}
@@ -446,23 +672,45 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
               <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-3">
                 Enter 6-Digit Room Code
               </label>
-              <input
-                type="text"
-                maxLength={6}
-                value={joinCodeInput}
-                onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
-                placeholder="e.g. IPL884"
-                className="w-full tracking-widest text-center text-3xl font-mono font-black uppercase py-4 rounded-xl bg-slate-950 border border-slate-700 text-amber-400 placeholder-slate-600 focus:outline-none focus:border-amber-400"
-                required
-              />
+              <div className="relative">
+                <input
+                  type="text"
+                  maxLength={6}
+                  value={joinCodeInput}
+                  onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+                  placeholder="e.g. IPL884"
+                  className="w-full tracking-widest text-center text-3xl font-mono font-black uppercase py-4 rounded-xl bg-slate-950 border border-slate-700 text-amber-400 placeholder-slate-600 focus:outline-none focus:border-amber-400"
+                  required
+                />
+              </div>
+
+              <div className="flex items-center justify-center gap-2 mt-3">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      if (text) {
+                        setJoinCodeInput(text.trim().slice(0, 6).toUpperCase());
+                      }
+                    } catch {
+                      // clipboard permission
+                    }
+                  }}
+                  className="text-xs text-amber-400 hover:text-amber-300 underline font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <Copy className="w-3.5 h-3.5" /> Paste from Clipboard
+                </button>
+              </div>
+
               <p className="text-xs text-slate-400 mt-2">
-                Ask your friend or room host for their 6-character room code.
+                Ask the room host for their 6-digit code. Entering it connects you to their live auction and matches.
               </p>
             </div>
 
             <button
               type="submit"
-              className="w-full py-3 px-6 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-sm uppercase tracking-wider shadow-md shadow-amber-400/20 transition-all flex items-center justify-center gap-2"
+              className="w-full py-3.5 px-6 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-sm uppercase tracking-wider shadow-md shadow-amber-400/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
               <LogIn className="w-4 h-4" /> Connect to Room
             </button>

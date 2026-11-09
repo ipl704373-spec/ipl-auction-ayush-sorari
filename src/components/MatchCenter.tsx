@@ -4,10 +4,12 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { RoomState, Match, Team, BallData, InningsData } from '../types/cricket';
-import { simulateFullMatch } from '../services/matchSimulation';
+import { RoomState, Match, Team, BallData, InningsData, MatchPrizeBreakdown } from '../types/cricket';
+import { simulateFullMatch, applyMatchPrizeToRoom } from '../services/matchSimulation';
 import { sound } from '../services/soundFx';
-import { saveRoom } from '../services/storage';
+import { saveRoom, getCurrentUser } from '../services/storage';
+import { formatCurrency } from '../data/iplFranchises';
+import confetti from 'canvas-confetti';
 import {
   Play,
   RotateCcw,
@@ -20,7 +22,12 @@ import {
   Clock,
   Sparkles,
   Radio,
-  FileText
+  FileText,
+  Coins,
+  TrendingUp,
+  CheckCircle2,
+  ArrowUpRight,
+  Flame
 } from 'lucide-react';
 
 interface MatchCenterProps {
@@ -43,28 +50,58 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
   const [liveInnings, setLiveInnings] = useState<1 | 2>(1);
   const [activeScorecardModalMatch, setActiveScorecardModalMatch] = useState<Match | null>(null);
 
+  const currentUser = getCurrentUser();
+  const userFranchise =
+    room.teams.find((t) => t.userId === currentUser?.id) ||
+    room.teams.find((t) => t.isUserTeam) ||
+    room.teams[0];
+
   const activeMatch = room.matches.find((m) => m.id === selectedMatchId) || room.matches[0];
   const team1 = room.teams.find((t) => t.id === activeMatch?.team1Id);
   const team2 = room.teams.find((t) => t.id === activeMatch?.team2Id);
 
   const simIntervalRef = useRef<number | null>(null);
 
-  // Instant simulate entire match
+  // Auto-settle prize money into franchise purses if viewing a completed match that hasn't recorded prizes
+  useEffect(() => {
+    if (activeMatch?.status === 'COMPLETED' && (!activeMatch.prizeAwarded || !activeMatch.team1Prize)) {
+      const { updatedRoom } = applyMatchPrizeToRoom(room, activeMatch, currentUser?.id);
+      onUpdateRoom(updatedRoom);
+      saveRoom(updatedRoom);
+    }
+  }, [activeMatch?.id, activeMatch?.status]);
+
+  // Trigger celebration confetti
+  const triggerCelebration = () => {
+    try {
+      confetti({
+        particleCount: 110,
+        spread: 80,
+        origin: { y: 0.6 },
+        colors: ['#F59E0B', '#10B981', '#3B82F6', '#EF4444', '#EC4899', '#8B5CF6']
+      });
+    } catch {
+      // safe fallback
+    }
+  };
+
+  // Instant simulate entire match and disburse performance prize money to purse
   const handleInstantSimulate = (matchToSim: Match) => {
     if (!team1 || !team2) return;
     const completedMatch = simulateFullMatch(matchToSim, team1, team2);
 
-    const updatedMatches = room.matches.map((m) =>
-      m.id === completedMatch.id ? completedMatch : m
+    // Calculate performance-based prize money & add to franchise purse & account
+    const { updatedRoom } = applyMatchPrizeToRoom(
+      room,
+      completedMatch,
+      currentUser?.id
     );
-
-    const updatedRoom: RoomState = {
-      ...room,
-      matches: updatedMatches
-    };
 
     onUpdateRoom(updatedRoom);
     saveRoom(updatedRoom);
+
+    sound.playPrizeChime();
+    triggerCelebration();
   };
 
   // Start live ball-by-ball playback
@@ -108,13 +145,19 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
             return 0;
           } else {
             setIsSimulatingLive(false);
-            // Save completed state
-            const updatedMatches = room.matches.map((m) =>
-              m.id === activeMatch.id ? { ...activeMatch, status: 'COMPLETED' as const } : m
+            
+            // Mark match completed & disburse performance prize money into franchise purse
+            const completedMatch: Match = { ...activeMatch, status: 'COMPLETED' as const };
+            const { updatedRoom } = applyMatchPrizeToRoom(
+              room,
+              completedMatch,
+              currentUser?.id
             );
-            const updatedRoom = { ...room, matches: updatedMatches };
+
             onUpdateRoom(updatedRoom);
             saveRoom(updatedRoom);
+            sound.playPrizeChime();
+            triggerCelebration();
             return prev;
           }
         }
@@ -259,6 +302,158 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
                           <span className="text-slate-500 font-mono block text-[10px] uppercase">Player of the Match</span>
                           <span className="font-bold text-white text-sm">{activeMatch.playerOfTheMatchName}</span>
                           <span className="text-slate-400 ml-2">({activeMatch.playerOfTheMatchPerformance})</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* OFFICIAL PERFORMANCE PRIZE MONEY & PURSE ACCREDITATION */}
+                    {activeMatch.team1Prize && activeMatch.team2Prize && (
+                      <div className="rounded-2xl border border-amber-500/30 bg-gradient-to-br from-amber-500/10 via-slate-900 to-slate-950 p-5 shadow-2xl relative overflow-hidden mt-4">
+                        {/* Shimmer light */}
+                        <div className="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 bg-amber-400/10 rounded-full blur-3xl pointer-events-none" />
+
+                        {/* Title Bar */}
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4 border-b border-amber-500/20 pb-3 relative z-10">
+                          <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 rounded-xl bg-amber-400/20 border border-amber-400/40 flex items-center justify-center text-amber-400 shrink-0 shadow-sm">
+                              <Coins className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h3 className="font-extrabold text-white font-display text-sm sm:text-base uppercase tracking-wider">
+                                  Match Prize Money & Purse Rewards
+                                </h3>
+                                <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded uppercase">
+                                  Credited to Purse
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-400">
+                                Total Match Rewards: <strong className="font-mono text-amber-300 font-bold">{formatCurrency(activeMatch.team1Prize.totalPrize + activeMatch.team2Prize.totalPrize)}</strong> deposited based on performance
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="text-[11px] text-slate-400 font-mono flex items-center gap-1.5 self-start sm:self-center">
+                            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                            <span>IPL Performance Incentives</span>
+                          </div>
+                        </div>
+
+                        {/* Dual Team Cards Grid */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 relative z-10">
+                          {[
+                            { prize: activeMatch.team1Prize, team: team1, isWinner: activeMatch.winnerId === team1.id },
+                            { prize: activeMatch.team2Prize, team: team2, isWinner: activeMatch.winnerId === team2.id }
+                          ].map(({ prize, team: t, isWinner }, idx) => {
+                            if (!prize || !t) return null;
+                            const isUser = t.id === userFranchise.id;
+
+                            return (
+                              <div
+                                key={idx}
+                                className={`rounded-xl p-4 border transition-all ${
+                                  isWinner
+                                    ? 'bg-slate-950/80 border-amber-500/40 shadow-lg shadow-amber-500/5'
+                                    : 'bg-slate-950/60 border-slate-800'
+                                } ${isUser ? 'ring-2 ring-amber-400/60' : ''}`}
+                              >
+                                {/* Team header & prize won */}
+                                <div className="flex items-center justify-between mb-3 border-b border-slate-800/80 pb-2.5">
+                                  <div className="flex items-center gap-2.5 min-w-0">
+                                    <span
+                                      className="w-3.5 h-3.5 rounded-full shrink-0 shadow-sm"
+                                      style={{ backgroundColor: t.primaryColor }}
+                                    />
+                                    <div className="truncate">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="font-bold text-white text-sm font-display uppercase truncate">
+                                          {t.name}
+                                        </span>
+                                        {isUser && (
+                                          <span className="text-[9px] font-bold text-amber-400 bg-amber-400/20 px-1.5 py-0.2 rounded font-mono shrink-0">
+                                            YOU
+                                          </span>
+                                        )}
+                                      </div>
+                                      <span
+                                        className={`text-[10px] font-mono font-bold uppercase ${
+                                          isWinner ? 'text-amber-400' : 'text-slate-400'
+                                        }`}
+                                      >
+                                        {isWinner ? '🏆 Match Winner' : 'Runner-Up'}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <div className="text-right shrink-0">
+                                    <span className="text-[10px] font-mono text-slate-400 block uppercase">Prize Won</span>
+                                    <span className="text-base font-black font-mono text-emerald-400">
+                                      +{formatCurrency(prize.totalPrize)}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Purse impact movement pill */}
+                                <div className="rounded-lg bg-slate-900/90 border border-emerald-500/30 p-2.5 mb-3 flex items-center justify-between text-xs">
+                                  <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[11px]">
+                                    <span>Before:</span>
+                                    <span className="text-slate-300 font-semibold">{formatCurrency(prize.previousPurse)}</span>
+                                  </div>
+                                  <div className="flex items-center gap-1 text-emerald-400 font-mono font-bold text-[11px]">
+                                    <ArrowUpRight className="w-3.5 h-3.5" />
+                                    <span>Purse: {formatCurrency(prize.newPurse)}</span>
+                                  </div>
+                                </div>
+
+                                {/* Performance Bonuses List */}
+                                <div className="space-y-1.5 text-xs max-h-48 overflow-y-auto pr-1">
+                                  <div className="flex items-center justify-between text-slate-300 py-1 border-b border-slate-800/40 text-[11px]">
+                                    <span className="text-slate-400 font-medium">
+                                      {isWinner ? 'Base Match Win Award' : 'Participation & Fighting Award'}
+                                    </span>
+                                    <span className="font-mono font-bold text-amber-400">
+                                      +{formatCurrency(prize.basePrize)}
+                                    </span>
+                                  </div>
+
+                                  {prize.performanceBonuses.map((bonus, bIdx) => (
+                                    <div
+                                      key={bIdx}
+                                      className="flex items-center justify-between text-slate-300 py-1 text-[11px]"
+                                    >
+                                      <span className="flex items-center gap-1.5 truncate pr-2 text-slate-300">
+                                        <span
+                                          className={`text-[8px] font-mono font-bold px-1.5 py-0.5 rounded uppercase ${
+                                            bonus.category === 'BATTING'
+                                              ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                                              : bonus.category === 'BOWLING'
+                                              ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                                              : bonus.category === 'POTM'
+                                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                              : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                          }`}
+                                        >
+                                          {bonus.category}
+                                        </span>
+                                        <span className="truncate">{bonus.label}</span>
+                                      </span>
+                                      <span className="font-mono font-bold text-emerald-400 shrink-0">
+                                        +{formatCurrency(bonus.amount)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                {/* If user franchise: Confirmation message */}
+                                {isUser && (
+                                  <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center gap-1.5 text-[11px] text-amber-300 font-medium">
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                    <span>+{formatCurrency(prize.totalPrize)} deposited into your franchise purse & wallet!</span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -427,6 +622,17 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
                         </span>
                       )}
                     </div>
+
+                    {isCompleted && match.team1Prize && match.team2Prize && (
+                      <div className="mt-2 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px] font-mono">
+                        <span className="text-slate-400 flex items-center gap-1">
+                          <Coins className="w-3 h-3 text-amber-400" /> Purse Prize:
+                        </span>
+                        <span className="text-emerald-400 font-bold">
+                          +{formatCurrency(match.team1Prize.totalPrize + match.team2Prize.totalPrize)}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -450,9 +656,27 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
             <h3 className="text-xl font-bold text-white font-display uppercase mb-1">
               Official Match Scorecard
             </h3>
-            <p className="text-xs text-amber-400 font-semibold mb-4">
+            <p className="text-xs text-amber-400 font-semibold mb-3">
               {room.teams.find((t) => t.id === activeScorecardModalMatch.winnerId)?.name} {activeScorecardModalMatch.margin}
             </p>
+
+            {/* Scorecard Prize Money summary if awarded */}
+            {activeScorecardModalMatch.team1Prize && activeScorecardModalMatch.team2Prize && (
+              <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2">
+                  <Coins className="w-4 h-4 text-amber-400" />
+                  <span className="font-bold text-white">Prize Money Awarded:</span>
+                  <span className="text-emerald-400 font-mono font-bold">
+                    {activeScorecardModalMatch.team1Prize.shortName} (+{formatCurrency(activeScorecardModalMatch.team1Prize.totalPrize)})
+                  </span>
+                  <span>·</span>
+                  <span className="text-emerald-400 font-mono font-bold">
+                    {activeScorecardModalMatch.team2Prize.shortName} (+{formatCurrency(activeScorecardModalMatch.team2Prize.totalPrize)})
+                  </span>
+                </div>
+                <span className="text-[10px] text-slate-400 uppercase font-mono">Credited to Purse</span>
+              </div>
+            )}
 
             {/* Innings 1 Scorecard */}
             <div className="mb-6">

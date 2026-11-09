@@ -27,6 +27,26 @@
           "type": "number",
           "description": "Count of matches played"
         },
+        "passwordHash": {
+          "type": "string",
+          "description": "Encrypted credential hash",
+          "maxLength": 256
+        },
+        "securityQuestion": {
+          "type": "string",
+          "description": "Account recovery question",
+          "maxLength": 256
+        },
+        "securityAnswer": {
+          "type": "string",
+          "description": "Account recovery answer",
+          "maxLength": 256
+        },
+        "activeRoomCode": {
+          "type": "string",
+          "description": "Current active tournament or auction room code",
+          "maxLength": 10
+        },
         "createdAt": {
           "type": "string",
           "description": "Account creation timestamp"

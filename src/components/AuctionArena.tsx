@@ -17,7 +17,7 @@ import {
   finalizeCurrentPlayer
 } from '../services/auctionEngine';
 import { sound } from '../services/soundFx';
-import { saveRoom } from '../services/storage';
+import { saveRoom, getCurrentUser } from '../services/storage';
 import {
   Gavel,
   Radio,
@@ -35,6 +35,10 @@ import {
   Sparkles,
   Award,
   ArrowRight,
+  Users,
+  Copy,
+  LogOut,
+  X,
   Check
 } from 'lucide-react';
 
@@ -42,6 +46,7 @@ interface AuctionArenaProps {
   room: RoomState;
   onUpdateRoom: (updated: RoomState) => void;
   onNavigateToSquads: () => void;
+  onLeaveAuction?: () => void;
 }
 
 interface LotOutcome {
@@ -55,19 +60,28 @@ interface LotOutcome {
 export const AuctionArena: React.FC<AuctionArenaProps> = ({
   room,
   onUpdateRoom,
-  onNavigateToSquads
+  onNavigateToSquads,
+  onLeaveAuction
 }) => {
   const [isPaused, setIsPaused] = useState(false);
   const [autoBidCeiling, setAutoBidCeiling] = useState<number | null>(null);
   const [isAutoBidding, setIsAutoBidding] = useState(false);
   const [lotOutcome, setLotOutcome] = useState<LotOutcome | null>(null);
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
 
   const roomRef = useRef<RoomState>(room);
   roomRef.current = room;
 
   const currentPlayer = room.playersPool[room.currentPlayerIndex] as Player | undefined;
-  const userTeam = room.teams.find((t) => t.isUserTeam) || room.teams[0];
+  const currentUser = getCurrentUser();
+  const userTeam =
+    room.teams.find((t) => t.userId === currentUser?.id) ||
+    room.teams.find((t) => t.isUserTeam) ||
+    room.teams[0];
+  const realPlayersInRoom = room.teams.filter((t) => t.userId || t.isUserTeam);
   const leadingTeam = room.teams.find((t) => t.id === room.currentBidderTeamId);
+
+  const [copiedCodeBanner, setCopiedCodeBanner] = useState(false);
 
   const nextBidAmount =
     room.currentBid === 0
@@ -188,8 +202,10 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
     saveRoom(nextRoom);
   };
 
-  // AI Bot Bidding Behavior
+  // AI Bot Bidding Behavior: ONLY runs in Solo mode.
+  // CRITICAL REQUIREMENT: In FULL_MULTIPLAYER mode, NO bot bids whatsoever! Only real players that join the room can bid.
   useEffect(() => {
+    if (room.mode === 'FULL_MULTIPLAYER') return;
     if (isPaused || !currentPlayer || room.status !== 'AUCTION' || lotOutcome !== null) return;
     if (room.timerRemaining < 2) return; // Don't interrupt final second before hammer
 
@@ -198,6 +214,7 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
 
     botTimeoutRef.current = window.setTimeout(() => {
       const currentRoom = roomRef.current;
+      if (currentRoom.mode === 'FULL_MULTIPLAYER') return;
       if (currentRoom.timerRemaining < 2 || lotOutcome !== null) return;
 
       // Find eligible bot teams interested in player
@@ -205,7 +222,7 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
       const shuffled = [...botTeams].sort(() => Math.random() - 0.5);
 
       for (const bot of shuffled) {
-        const wantsToBid = evaluateBotBid(bot, currentPlayer, currentRoom.currentBid, currentRoom.currentBidderTeamId);
+        const wantsToBid = evaluateBotBid(bot, currentPlayer, currentRoom.currentBid, currentRoom.currentBidderTeamId, currentRoom.mode);
         if (wantsToBid) {
           sound.playBidPop();
           const { updatedRoom, success } = placeBidOnCurrentPlayer(currentRoom, bot.id);
@@ -221,7 +238,7 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
     return () => {
       if (botTimeoutRef.current) clearTimeout(botTimeoutRef.current);
     };
-  }, [room.currentBid, room.currentBidderTeamId, currentPlayer?.id, isPaused, room.status, lotOutcome]);
+  }, [room.currentBid, room.currentBidderTeamId, currentPlayer?.id, isPaused, room.status, lotOutcome, room.mode]);
 
   // User Auto-Bidding check
   useEffect(() => {
@@ -260,6 +277,44 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
     onUpdateRoom(res.updatedRoom);
     saveRoom(res.updatedRoom);
     setLotOutcome(null);
+  };
+
+  // User leaves the auction room
+  const handleConfirmLeaveAuction = () => {
+    // If in full multiplayer, broadcast leave announcement and release table if guest
+    if (room.mode === 'FULL_MULTIPLAYER' && currentUser) {
+      const isHost = room.hostUserId === currentUser.id;
+      const updatedTeams = room.teams.map((t) => {
+        if (!isHost && t.userId === currentUser.id) {
+          return { ...t, userId: undefined, isBot: false };
+        }
+        return t;
+      });
+
+      const leaveLog = {
+        id: `log-leave-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'ANNOUNCEMENT' as const,
+        playerId: currentPlayer?.id || 'leave',
+        playerName: currentUser.username,
+        amount: 0,
+        message: `🚪 Real Player ${currentUser.username} has left the auction arena.`
+      };
+
+      const updatedRoom: RoomState = {
+        ...room,
+        teams: updatedTeams,
+        auctionLogs: [leaveLog, ...room.auctionLogs.slice(0, 48)],
+        lastUpdated: Date.now()
+      };
+      saveRoom(updatedRoom);
+      onUpdateRoom(updatedRoom);
+    }
+
+    setShowLeaveModal(false);
+    if (onLeaveAuction) {
+      onLeaveAuction();
+    }
   };
 
   // Timer visual progress math
@@ -325,8 +380,61 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
           >
             <Shield className="w-3.5 h-3.5" /> Squad Hub
           </button>
+
+          <button
+            type="button"
+            onClick={() => setShowLeaveModal(true)}
+            title="Leave the auction arena and return to lobby"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500/15 border border-rose-500/30 text-rose-400 hover:bg-rose-500/25 hover:text-rose-300 transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" /> Leave Auction
+          </button>
         </div>
       </div>
+
+      {/* FULL MULTIPLAYER STATUS BANNER */}
+      {room.mode === 'FULL_MULTIPLAYER' && (
+        <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 p-3.5 shadow-lg backdrop-blur-md">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/20 text-sky-400 shrink-0">
+                <Users className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-extrabold text-white text-xs uppercase tracking-wider font-display">
+                    Full Multiplayer Mode
+                  </span>
+                  <span className="text-[10px] font-bold text-sky-300 bg-sky-500/20 px-2 py-0.5 rounded border border-sky-400/30 uppercase">
+                    No Bots &bull; Real Players Only
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-300 mt-0.5">
+                  Bot bids are disabled. Only real human players who enter room code <strong className="font-mono text-amber-300 font-bold">{room.code}</strong> can place bids.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-xs text-slate-400 font-medium">
+                {realPlayersInRoom.length} Real Player{realPlayersInRoom.length !== 1 ? 's' : ''} in Room
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(room.code);
+                  setCopiedCodeBanner(true);
+                  setTimeout(() => setCopiedCodeBanner(false), 2000);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-1 shadow-sm cursor-pointer"
+              >
+                {copiedCodeBanner ? <Check className="w-3.5 h-3.5 text-emerald-950" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedCodeBanner ? 'Copied Code!' : `Invite Code: ${room.code}`}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Grid: Player Card & Live Bidding Podium + Ticker & Purse Board */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -699,7 +807,15 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
                       />
                       <span className="font-semibold text-slate-200 truncate">
                         {team.shortName}
-                        {team.isUserTeam && <span className="ml-1 text-[10px] text-amber-400">(You)</span>}
+                        {team.id === userTeam.id && (
+                          <span className="ml-1 text-[10px] text-amber-400 font-bold">(You)</span>
+                        )}
+                        {team.id !== userTeam.id && (team.userId || (!team.isBot && room.mode === 'FULL_MULTIPLAYER')) && (
+                          <span className="ml-1 text-[9px] text-sky-400 font-bold">(Real Player)</span>
+                        )}
+                        {room.mode === 'FULL_MULTIPLAYER' && !team.userId && team.id !== userTeam.id && (
+                          <span className="ml-1 text-[9px] text-slate-500 font-mono">(Unclaimed)</span>
+                        )}
                       </span>
                     </div>
 
@@ -753,10 +869,72 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
               )}
             </div>
           </div>
-
         </div>
-
       </div>
+
+      {/* LEAVE AUCTION CONFIRMATION MODAL */}
+      {showLeaveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl relative">
+            <button
+              type="button"
+              onClick={() => setShowLeaveModal(false)}
+              className="absolute top-4 right-4 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              title="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 shrink-0">
+                <LogOut className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white font-display uppercase tracking-wide">
+                  Leave Auction Arena?
+                </h3>
+                <span className="text-xs text-slate-400 font-mono">
+                  Room #{room.code} &bull; {userTeam.name}
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-3 mb-6">
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Are you sure you want to exit the live auction arena? All your acquired players, purse balance, and team configurations remain safely saved under your account.
+              </p>
+              {room.mode === 'FULL_MULTIPLAYER' ? (
+                <div className="rounded-lg bg-sky-500/10 border border-sky-500/20 p-2.5 text-[11px] text-sky-300">
+                  <strong className="font-semibold block mb-0.5">Full Multiplayer Notice:</strong>
+                  Your franchise table will be preserved, and other participants will be notified in the room activity log.
+                </div>
+              ) : (
+                <div className="rounded-lg bg-slate-950/80 border border-slate-800/80 p-2.5 text-[11px] text-slate-400">
+                  You can resume this campaign anytime directly from the <strong>Lobby</strong> screen.
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowLeaveModal(false)}
+                className="px-4 py-2.5 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Stay in Auction
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmLeaveAuction}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider transition-colors shadow-lg shadow-rose-600/20 cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Yes, Leave Arena
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

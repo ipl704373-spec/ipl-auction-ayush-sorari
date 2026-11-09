@@ -7,16 +7,18 @@ import React, { useState, useEffect } from 'react';
 import { UserAccount, RoomState } from './types/cricket';
 import {
   getCurrentUser,
-  setCurrentUser,
+  logoutUser,
   getActiveRoomCode,
   setActiveRoomCode,
   getRoomByCode,
   getStoredRooms,
-  saveRoom,
+  getUserActiveRoomCode,
+  getUserRooms,
   subscribeToRoomBroadcast,
   subscribeToCloudRoom
 } from './services/storage';
 import { Navbar } from './components/Navbar';
+import { AuthScreen } from './components/AuthScreen';
 import { AuthModal } from './components/AuthModal';
 import { LobbyView } from './components/LobbyView';
 import { AuctionArena } from './components/AuctionArena';
@@ -29,36 +31,44 @@ export default function App() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [activeRoom, setActiveRoom] = useState<RoomState | null>(null);
   const [activeTab, setActiveTab] = useState<'LOBBY' | 'AUCTION' | 'SQUADS' | 'MATCHES' | 'STANDINGS'>('LOBBY');
+  const [isCheckingSession, setIsCheckingSession] = useState(true);
 
-  // Load user session on mount
+  // Load user session and account progress on initial mount
   useEffect(() => {
     const user = getCurrentUser();
     if (user) {
       setCurrentUserState(user);
-    }
-
-    // Load active room if exists
-    const roomCode = getActiveRoomCode();
-    if (roomCode) {
-      getRoomByCode(roomCode).then((room) => {
-        if (room) {
-          setActiveRoom(room);
-          setActiveTab('AUCTION');
+      // Retrieve progress saved specifically in this user's account
+      const userActiveCode = getUserActiveRoomCode(user.id) || getActiveRoomCode();
+      if (userActiveCode) {
+        getRoomByCode(userActiveCode).then((room) => {
+          if (room) {
+            setActiveRoom(room);
+            setActiveTab('AUCTION');
+          }
+          setIsCheckingSession(false);
+        }).catch(() => {
+          setIsCheckingSession(false);
+        });
+      } else {
+        const userRooms = getUserRooms(user.id);
+        const roomKeys = Object.keys(userRooms);
+        if (roomKeys.length > 0) {
+          setActiveRoom(userRooms[roomKeys[0]]);
         }
-      });
-    } else {
-      // Check if any rooms exist
-      const allRooms = getStoredRooms();
-      const firstRoomKey = Object.keys(allRooms)[0];
-      if (firstRoomKey) {
-        setActiveRoom(allRooms[firstRoomKey]);
+        setIsCheckingSession(false);
       }
+    } else {
+      // User is not logged in: clear active room so no progress is leaked
+      setCurrentUserState(null);
+      setActiveRoom(null);
+      setIsCheckingSession(false);
     }
   }, []);
 
-  // Subscribe to real-time BroadcastChannel & Cloud Firestore updates
+  // Subscribe to real-time BroadcastChannel & Cloud Firestore updates for the active room
   useEffect(() => {
-    if (!activeRoom) return;
+    if (!currentUser || !activeRoom) return;
 
     // 1. Instant same-device cross-tab BroadcastChannel
     const unsubscribeBroadcast = subscribeToRoomBroadcast((updatedRoom) => {
@@ -78,15 +88,41 @@ export default function App() {
       unsubscribeBroadcast();
       unsubscribeCloud();
     };
-  }, [activeRoom?.code]);
+  }, [currentUser?.id, activeRoom?.code]);
 
+  // Handle successful login or registration
   const handleAuthSuccess = (user: UserAccount) => {
     setCurrentUserState(user);
+    // Restore progress saved in this specific account
+    const userActiveCode = getUserActiveRoomCode(user.id);
+    if (userActiveCode) {
+      getRoomByCode(userActiveCode).then((room) => {
+        if (room) {
+          setActiveRoom(room);
+          setActiveTab('AUCTION');
+        } else {
+          setActiveTab('LOBBY');
+        }
+      });
+    } else {
+      const userRooms = getUserRooms(user.id);
+      const roomKeys = Object.keys(userRooms);
+      if (roomKeys.length > 0) {
+        setActiveRoom(userRooms[roomKeys[0]]);
+        setActiveTab('AUCTION');
+      } else {
+        setActiveRoom(null);
+        setActiveTab('LOBBY');
+      }
+    }
   };
 
+  // Immediate logout: clears session, clears active progress from memory, locks app
   const handleLogout = () => {
-    setCurrentUser(null);
+    logoutUser();
     setCurrentUserState(null);
+    setActiveRoom(null);
+    setActiveTab('LOBBY');
   };
 
   const handleEnterRoom = (room: RoomState) => {
@@ -95,10 +131,69 @@ export default function App() {
     setActiveTab('AUCTION');
   };
 
-  const handleUpdateRoom = (updated: RoomState) => {
-    setActiveRoom(updated);
+  const handleLeaveAuction = () => {
+    // Return to Lobby while preserving active room session for instant re-entry
+    setActiveTab('LOBBY');
   };
 
+  const handleUpdateRoom = (updated: RoomState) => {
+    setActiveRoom(updated);
+    const freshUser = getCurrentUser();
+    if (freshUser) {
+      setCurrentUserState(freshUser);
+    }
+  };
+
+  // While checking initial local session
+  if (isCheckingSession) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-10 w-10 animate-spin rounded-full border-4 border-amber-400 border-t-transparent" />
+          <span className="font-display font-bold text-amber-400 text-lg uppercase tracking-wider">
+            Loading Franchise Arena...
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  // REQUIREMENT: If not logged in first, login and register, then only the app will open.
+  // The moment logged out it will not show the progress, when logged in then only it will show the progress.
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col relative selection:bg-amber-400 selection:text-slate-950 font-sans">
+        {/* Stadium Ambient Lighting & Subtle Backdrop */}
+        <div
+          className="fixed inset-0 pointer-events-none z-0 opacity-15 bg-cover bg-center mix-blend-screen"
+          style={{
+            backgroundImage: `url('/src/assets/images/ipl_stadium_atmosphere_1794069365422.jpg')`
+          }}
+        />
+        <div className="fixed inset-0 pointer-events-none z-0 bg-gradient-to-b from-slate-950/80 via-slate-950/95 to-slate-950" />
+
+        {/* Dedicated Auth Gate Screen */}
+        <main className="relative z-10 flex-1 flex flex-col justify-center">
+          <AuthScreen onSuccess={handleAuthSuccess} />
+        </main>
+
+        <footer className="relative z-10 border-t border-slate-900 bg-slate-950/90 py-4 text-center text-xs text-slate-500">
+          <div className="mx-auto max-w-7xl px-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-slate-400 font-display">IPL AUCTION ARENA</span>
+              <span>·</span>
+              <span>Authentication Gate &bull; Account Progress Shield</span>
+            </div>
+            <div>
+              <span>Starting Bonus: ₹10,000,000 on registration</span>
+            </div>
+          </div>
+        </footer>
+      </div>
+    );
+  }
+
+  // Once authenticated: Render full IPL Auction & Tournament Arena
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col relative selection:bg-amber-400 selection:text-slate-950 font-sans">
       
@@ -139,6 +234,7 @@ export default function App() {
             room={activeRoom}
             onUpdateRoom={handleUpdateRoom}
             onNavigateToSquads={() => setActiveTab('SQUADS')}
+            onLeaveAuction={handleLeaveAuction}
           />
         )}
 
@@ -166,7 +262,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Quiet, Clean Editorial Footer adhering to guidelines */}
+      {/* Clean Editorial Footer */}
       <footer className="relative z-10 border-t border-slate-900 bg-slate-950/80 py-4 text-center text-xs text-slate-500">
         <div className="mx-auto max-w-7xl px-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -175,12 +271,14 @@ export default function App() {
             <span>Premier League Auction & Match Simulation</span>
           </div>
           <div>
-            <span>Starting Bonus Base Support: ₹10,000,000</span>
+            <span className="text-amber-400/90 font-mono">
+              Account: {currentUser.username} &bull; Progress Active
+            </span>
           </div>
         </div>
       </footer>
 
-      {/* Authentication Modal */}
+      {/* Profile / Account Modal if triggered */}
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}

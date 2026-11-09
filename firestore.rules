@@ -43,5 +43,10 @@ service cloud.firestore {
         && incoming().status is string;
       allow delete: if isValidId(roomCode);
     }
+
+    // Connection test document for boot verification
+    match /test/{docId} {
+      allow read: if true;
+    }
   }
 }

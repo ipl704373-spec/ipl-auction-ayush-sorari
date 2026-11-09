@@ -29,14 +29,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
   if (!isOpen) return null;
 
-  const handleRegister = (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (!username.trim() || !password.trim() || !securityAnswer.trim()) {
       setError('Please fill in all required fields.');
       return;
     }
-    const res = registerUser(username, password, securityQuestion, securityAnswer);
+    const res = await registerUser(username, password, securityQuestion, securityAnswer);
     if (res.success && res.user) {
       onSuccess(res.user);
       onClose();
@@ -45,14 +45,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     }
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (!username.trim() || !password.trim()) {
       setError('Please enter your username and password.');
       return;
     }
-    const res = loginUser(username, password);
+    const res = await loginUser(username, password);
     if (res.success && res.user) {
       onSuccess(res.user);
       onClose();
@@ -61,7 +61,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     }
   };
 
-  const handleRecover = (e: React.FormEvent) => {
+  const handleRecover = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccessMsg(null);
@@ -69,7 +69,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
       setError('Please fill in all recovery fields.');
       return;
     }
-    const res = recoverPassword(username, securityAnswer, newPassword);
+    const res = await recoverPassword(username, securityAnswer, newPassword);
     if (res.success) {
       setSuccessMsg('Password updated successfully! You can now log in.');
       setTab('LOGIN');

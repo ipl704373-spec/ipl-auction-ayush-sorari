@@ -27,13 +27,23 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLogout
 }) => {
   const [muted, setMuted] = React.useState(sound.getMuted());
+  const [copiedCode, setCopiedCode] = React.useState(false);
 
   const handleToggleSound = () => {
     const isNowMuted = sound.toggleMute();
     setMuted(isNowMuted);
   };
 
-  const userFranchise = activeRoom?.teams.find((t) => t.isUserTeam);
+  const handleCopyRoomCode = () => {
+    if (!activeRoom) return;
+    navigator.clipboard.writeText(activeRoom.code);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
+
+  const userFranchise =
+    activeRoom?.teams.find((t) => t.userId === currentUser?.id) ||
+    activeRoom?.teams.find((t) => t.isUserTeam);
 
   return (
     <header className="sticky top-0 z-50 border-b border-slate-800 bg-slate-950/90 backdrop-blur-md">
@@ -58,9 +68,17 @@ export const Navbar: React.FC<NavbarProps> = ({
           {activeRoom && (
             <div className="hidden lg:flex items-center gap-2 pl-3 border-l border-slate-800 text-xs">
               <span className="text-slate-400">Room:</span>
-              <span className="font-mono font-bold tracking-widest text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded border border-amber-400/20">
-                {activeRoom.code}
-              </span>
+              <button
+                type="button"
+                onClick={handleCopyRoomCode}
+                title="Click to copy 6-digit Room Code for another person to join"
+                className="group flex items-center gap-1.5 font-mono font-bold tracking-widest text-amber-400 bg-amber-400/10 hover:bg-amber-400/20 px-2 py-0.5 rounded border border-amber-400/25 transition-all cursor-pointer"
+              >
+                <span>{activeRoom.code}</span>
+                <span className="text-[10px] text-amber-300">
+                  {copiedCode ? '✓ Copied' : '📋 Copy'}
+                </span>
+              </button>
               {activeRoom.status === 'AUCTION' && (
                 <span className="flex items-center gap-1 text-[11px] font-semibold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20 animate-pulse">
                   <Radio className="w-3 h-3" /> LIVE

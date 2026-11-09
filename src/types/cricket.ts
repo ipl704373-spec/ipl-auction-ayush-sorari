@@ -147,6 +147,23 @@ export interface InningsData {
   fallOfWickets: { score: number; wicketNum: number; over: string; batsmanName: string }[];
 }
 
+export interface PrizeBonusItem {
+  category: 'RESULT' | 'BATTING' | 'BOWLING' | 'POTM' | 'CHAMPIONSHIP';
+  label: string;
+  amount: number; // in INR
+}
+
+export interface MatchPrizeBreakdown {
+  teamId: string;
+  teamName: string;
+  shortName: string;
+  basePrize: number;
+  performanceBonuses: PrizeBonusItem[];
+  totalPrize: number;
+  previousPurse: number;
+  newPurse: number;
+}
+
 export interface Match {
   id: string;
   roundNumber: number;
@@ -165,6 +182,9 @@ export interface Match {
   playerOfTheMatchId?: string;
   playerOfTheMatchName?: string;
   playerOfTheMatchPerformance?: string;
+  team1Prize?: MatchPrizeBreakdown;
+  team2Prize?: MatchPrizeBreakdown;
+  prizeAwarded?: boolean;
 }
 
 export interface PointsTableEntry {
@@ -199,6 +219,8 @@ export interface RoomState {
   currentBidderTeamId: string | null;
   hammerStage: 0 | 1 | 2 | 3; // 0=Running, 1=Going Once, 2=Going Twice, 3=Sold
   timerRemaining: number;
+  isPaused?: boolean;
+  pausedByUserId?: string;
   auctionLogs: AuctionLogEntry[];
   matches: Match[];
   currentMatchIndex: number;

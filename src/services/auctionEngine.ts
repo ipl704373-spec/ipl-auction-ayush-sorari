@@ -55,8 +55,12 @@ export const evaluateBotBid = (
   botTeam: Team,
   player: Player,
   currentBid: number,
-  currentBidderId: string | null
+  currentBidderId: string | null,
+  mode?: string
 ): boolean => {
+  // CRITICAL: Strictly NO bot bids in full multiplayer mode
+  if (mode === 'FULL_MULTIPLAYER') return false;
+  if (!botTeam.isBot) return false;
   if (currentBidderId === botTeam.id) return false; // Already leading bidder
 
   const nextBid = currentBid === 0 ? player.basePrice : currentBid + getNextBidIncrement(currentBid);

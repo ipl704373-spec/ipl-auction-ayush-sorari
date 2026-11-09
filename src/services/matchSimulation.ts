@@ -13,8 +13,13 @@ import {
   BowlerScore,
   TournamentFormat,
   PitchCondition,
-  PointsTableEntry
+  PointsTableEntry,
+  MatchPrizeBreakdown,
+  PrizeBonusItem,
+  RoomState
 } from '../types/cricket';
+import { formatCurrency } from '../data/iplFranchises';
+import { creditUserPurse } from './storage';
 
 // Generate match fixtures for tournament
 export const generateTournamentFixtures = (
@@ -653,5 +658,312 @@ export const getTournamentCapLeaders = (matches: Match[]) => {
     orangeCapTop5: orangeCapList.slice(0, 5),
     purpleCapLeader: purpleCapList[0] || null,
     purpleCapTop5: purpleCapList.slice(0, 5)
+  };
+};
+
+// Calculate comprehensive performance-based prize money for a franchise
+export const calculateTeamMatchPrize = (
+  match: Match,
+  team: Team,
+  opponentTeam: Team,
+  isTeam1: boolean
+): MatchPrizeBreakdown => {
+  const isWinner = match.winnerId === team.id;
+  const isTie = !match.winnerId;
+
+  // Base Match Result Prize
+  let basePrize = 7500000; // ₹75 Lakhs minimum fighting participation prize
+  if (isWinner) {
+    basePrize = 25000000; // ₹2.50 Cr for winning the match
+  } else if (isTie) {
+    basePrize = 15000000; // ₹1.50 Cr for tied thriller
+  }
+
+  // Identify innings
+  const teamInnings = isTeam1 ? match.team1Innings : match.team2Innings;
+  const opponentInnings = isTeam1 ? match.team2Innings : match.team1Innings;
+
+  const bonuses: PrizeBonusItem[] = [];
+
+  // 1. Batting Team Totals
+  if (teamInnings) {
+    if (teamInnings.totalRuns >= 200) {
+      bonuses.push({
+        category: 'BATTING',
+        label: `Explosive 200+ Team Total (${teamInnings.totalRuns}/${teamInnings.totalWickets})`,
+        amount: 5000000 // ₹50 L
+      });
+    } else if (teamInnings.totalRuns >= 175) {
+      bonuses.push({
+        category: 'BATTING',
+        label: `Commanding 175+ Team Total (${teamInnings.totalRuns}/${teamInnings.totalWickets})`,
+        amount: 2500000 // ₹25 L
+      });
+    }
+
+    // Individual Batting Milestones
+    teamInnings.battingScorecard.forEach((b) => {
+      if (b.runs >= 100) {
+        bonuses.push({
+          category: 'BATTING',
+          label: `Century Milestone: ${b.playerName} (${b.runs} off ${b.balls})`,
+          amount: 4000000 // ₹40 L
+        });
+      } else if (b.runs >= 50) {
+        bonuses.push({
+          category: 'BATTING',
+          label: `Half-Century Milestone: ${b.playerName} (${b.runs} off ${b.balls})`,
+          amount: 1500000 // ₹15 L
+        });
+      }
+    });
+
+    // Team Sixes Power
+    const totalSixes = teamInnings.battingScorecard.reduce((sum, b) => sum + b.sixes, 0);
+    if (totalSixes >= 8) {
+      bonuses.push({
+        category: 'BATTING',
+        label: `Maximums Artillery (${totalSixes} Sixes Hit)`,
+        amount: 1500000 // ₹15 L
+      });
+    }
+  }
+
+  // 2. Bowling Dominance (from opponent innings where team bowled)
+  if (opponentInnings) {
+    const oppWickets = opponentInnings.totalWickets;
+    if (oppWickets === 10) {
+      bonuses.push({
+        category: 'BOWLING',
+        label: 'Bowling Masterclass (All 10 Wickets Taken)',
+        amount: 4000000 // ₹40 L
+      });
+    } else if (oppWickets >= 7) {
+      bonuses.push({
+        category: 'BOWLING',
+        label: `Wicket Hunters Strike (${oppWickets} Wickets Taken)`,
+        amount: 2000000 // ₹20 L
+      });
+    }
+
+    // Stifling Economy Defense
+    if (opponentInnings.totalRuns < 140 && (opponentInnings.oversCompleted >= 18 || oppWickets === 10)) {
+      bonuses.push({
+        category: 'BOWLING',
+        label: `Stifling Defense (Opponent Held to ${opponentInnings.totalRuns} Runs)`,
+        amount: 2500000 // ₹25 L
+      });
+    }
+
+    // Individual Bowling hauls
+    opponentInnings.bowlingScorecard.forEach((bw) => {
+      if (bw.wickets >= 4) {
+        bonuses.push({
+          category: 'BOWLING',
+          label: `Bowling Heroics: ${bw.playerName} (${bw.wickets}/${bw.runs} in ${bw.overs} ov)`,
+          amount: 3000000 // ₹30 L
+        });
+      }
+    });
+  }
+
+  // 3. Player of the Match
+  const potmInThisTeam = team.players.some((p) => p.id === match.playerOfTheMatchId);
+  if (potmInThisTeam && match.playerOfTheMatchName) {
+    bonuses.push({
+      category: 'POTM',
+      label: `Player of the Match Award: ${match.playerOfTheMatchName}`,
+      amount: 3500000 // ₹35 L
+    });
+  }
+
+  // 4. Decisive Victory Margin
+  if (isWinner && match.margin) {
+    if (match.margin.includes('run')) {
+      const runs = parseInt(match.margin.replace(/[^0-9]/g, ''), 10) || 0;
+      if (runs >= 30) {
+        bonuses.push({
+          category: 'RESULT',
+          label: `Dominant Win by ${runs} Runs`,
+          amount: 2500000 // ₹25 L
+        });
+      }
+    } else if (match.margin.includes('wicket')) {
+      const w = parseInt(match.margin.replace(/[^0-9]/g, ''), 10) || 0;
+      if (w >= 7) {
+        bonuses.push({
+          category: 'RESULT',
+          label: `Clinical Win by ${w} Wickets`,
+          amount: 2500000 // ₹25 L
+        });
+      }
+    } else if (match.margin.toLowerCase().includes('super over')) {
+      bonuses.push({
+        category: 'RESULT',
+        label: 'Super Over Thriller Triumph',
+        amount: 1500000 // ₹15 L
+      });
+    }
+  }
+
+  // 5. Championship / Playoff High Stakes Multiplier
+  const roundLower = match.roundName.toLowerCase();
+  if (roundLower.includes('final') && !roundLower.includes('semi') && !roundLower.includes('quarter')) {
+    if (isWinner) {
+      bonuses.push({
+        category: 'CHAMPIONSHIP',
+        label: 'IPL Championship Grand Trophy Purse',
+        amount: 100000000 // ₹10.00 Cr champion reward!
+      });
+    } else {
+      bonuses.push({
+        category: 'CHAMPIONSHIP',
+        label: 'IPL Grand Finalist Podium Award',
+        amount: 50000000 // ₹5.00 Cr finalist reward!
+      });
+    }
+  } else if (roundLower.includes('semifinal') || roundLower.includes('qualifier')) {
+    bonuses.push({
+      category: 'CHAMPIONSHIP',
+      label: 'Playoffs High-Stakes Bonus',
+      amount: 10000000 // ₹1.00 Cr playoff incentive
+    });
+  }
+
+  const performanceTotal = bonuses.reduce((acc, b) => acc + b.amount, 0);
+  const totalPrize = basePrize + performanceTotal;
+
+  return {
+    teamId: team.id,
+    teamName: team.name,
+    shortName: team.shortName,
+    basePrize,
+    performanceBonuses: bonuses,
+    totalPrize,
+    previousPurse: team.budget,
+    newPurse: team.budget + totalPrize
+  };
+};
+
+// Apply match prize money to franchise budgets, user account wallet, and room state
+export const applyMatchPrizeToRoom = (
+  room: RoomState,
+  completedMatch: Match,
+  currentUserId?: string
+): {
+  updatedRoom: RoomState;
+  finalizedMatch: Match;
+  team1Prize: MatchPrizeBreakdown;
+  team2Prize: MatchPrizeBreakdown;
+} => {
+  const team1 = room.teams.find((t) => t.id === completedMatch.team1Id);
+  const team2 = room.teams.find((t) => t.id === completedMatch.team2Id);
+
+  if (!team1 || !team2) {
+    return {
+      updatedRoom: room,
+      finalizedMatch: completedMatch,
+      team1Prize: completedMatch.team1Prize || {
+        teamId: completedMatch.team1Id,
+        teamName: 'Team 1',
+        shortName: 'T1',
+        basePrize: 0,
+        performanceBonuses: [],
+        totalPrize: 0,
+        previousPurse: 0,
+        newPurse: 0
+      },
+      team2Prize: completedMatch.team2Prize || {
+        teamId: completedMatch.team2Id,
+        teamName: 'Team 2',
+        shortName: 'T2',
+        basePrize: 0,
+        performanceBonuses: [],
+        totalPrize: 0,
+        previousPurse: 0,
+        newPurse: 0
+      }
+    };
+  }
+
+  // If already awarded, return existing
+  if (completedMatch.prizeAwarded && completedMatch.team1Prize && completedMatch.team2Prize) {
+    return {
+      updatedRoom: room,
+      finalizedMatch: completedMatch,
+      team1Prize: completedMatch.team1Prize,
+      team2Prize: completedMatch.team2Prize
+    };
+  }
+
+  // Calculate prizes based on actual performance
+  const team1Prize = calculateTeamMatchPrize(completedMatch, team1, team2, true);
+  const team2Prize = calculateTeamMatchPrize(completedMatch, team2, team1, false);
+
+  const finalizedMatch: Match = {
+    ...completedMatch,
+    status: 'COMPLETED',
+    team1Prize,
+    team2Prize,
+    prizeAwarded: true
+  };
+
+  // Add prize money to team purse budgets in the room
+  const updatedTeams = room.teams.map((t) => {
+    if (t.id === team1.id) {
+      return { ...t, budget: t.budget + team1Prize.totalPrize };
+    }
+    if (t.id === team2.id) {
+      return { ...t, budget: t.budget + team2Prize.totalPrize };
+    }
+    return t;
+  });
+
+  const isGrandFinal = completedMatch.roundName.toLowerCase().includes('final') &&
+    !completedMatch.roundName.toLowerCase().includes('semi') &&
+    !completedMatch.roundName.toLowerCase().includes('quarter');
+
+  // Credit user's persistent wallet if user's franchise participated
+  if (currentUserId) {
+    const userFranchise = room.teams.find((t) => t.userId === currentUserId || t.isUserTeam);
+    if (userFranchise) {
+      if (userFranchise.id === team1.id) {
+        const isUserWinner = completedMatch.winnerId === team1.id;
+        creditUserPurse(currentUserId, team1Prize.totalPrize, isUserWinner && isGrandFinal ? 1 : 0);
+      } else if (userFranchise.id === team2.id) {
+        const isUserWinner = completedMatch.winnerId === team2.id;
+        creditUserPurse(currentUserId, team2Prize.totalPrize, isUserWinner && isGrandFinal ? 1 : 0);
+      }
+    }
+  }
+
+  // Record broadcast log in auction / room feed
+  const prizeLog = {
+    id: `log-prize-${Date.now()}`,
+    timestamp: Date.now(),
+    type: 'ANNOUNCEMENT' as const,
+    playerId: completedMatch.playerOfTheMatchId || 'match-prize',
+    playerName: completedMatch.playerOfTheMatchName || 'Prize Payout',
+    amount: team1Prize.totalPrize + team2Prize.totalPrize,
+    message: `💰 MATCH REWARDS ADDED TO PURSE: ${team1.shortName} earned ${formatCurrency(team1Prize.totalPrize)} & ${team2.shortName} earned ${formatCurrency(team2Prize.totalPrize)}!`
+  };
+
+  const updatedMatches = room.matches.map((m) =>
+    m.id === finalizedMatch.id ? finalizedMatch : m
+  );
+
+  const updatedRoom: RoomState = {
+    ...room,
+    teams: updatedTeams,
+    matches: updatedMatches,
+    auctionLogs: [prizeLog, ...(room.auctionLogs || []).slice(0, 48)],
+    lastUpdated: Date.now()
+  };
+
+  return {
+    updatedRoom,
+    finalizedMatch,
+    team1Prize,
+    team2Prize
   };
 };
