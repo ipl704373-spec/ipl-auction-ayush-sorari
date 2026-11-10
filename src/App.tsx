@@ -14,9 +14,11 @@ import {
   getStoredRooms,
   getUserActiveRoomCode,
   getUserRooms,
+  saveRoom,
   subscribeToRoomBroadcast,
   subscribeToCloudRoom
 } from './services/storage';
+import { prepareRoomForExit, prepareRoomForRejoin } from './services/auctionEngine';
 import { Navbar } from './components/Navbar';
 import { AuthScreen } from './components/AuthScreen';
 import { AuthModal } from './components/AuthModal';
@@ -43,7 +45,9 @@ export default function App() {
       if (userActiveCode) {
         getRoomByCode(userActiveCode).then((room) => {
           if (room) {
-            setActiveRoom(room);
+            const readyRoom = prepareRoomForRejoin(room);
+            setActiveRoom(readyRoom);
+            saveRoom(readyRoom);
             setActiveTab('AUCTION');
           }
           setIsCheckingSession(false);
@@ -54,7 +58,9 @@ export default function App() {
         const userRooms = getUserRooms(user.id);
         const roomKeys = Object.keys(userRooms);
         if (roomKeys.length > 0) {
-          setActiveRoom(userRooms[roomKeys[0]]);
+          const readyRoom = prepareRoomForRejoin(userRooms[roomKeys[0]]);
+          setActiveRoom(readyRoom);
+          saveRoom(readyRoom);
         }
         setIsCheckingSession(false);
       }
@@ -98,7 +104,9 @@ export default function App() {
     if (userActiveCode) {
       getRoomByCode(userActiveCode).then((room) => {
         if (room) {
-          setActiveRoom(room);
+          const readyRoom = prepareRoomForRejoin(room);
+          setActiveRoom(readyRoom);
+          saveRoom(readyRoom);
           setActiveTab('AUCTION');
         } else {
           setActiveTab('LOBBY');
@@ -108,7 +116,9 @@ export default function App() {
       const userRooms = getUserRooms(user.id);
       const roomKeys = Object.keys(userRooms);
       if (roomKeys.length > 0) {
-        setActiveRoom(userRooms[roomKeys[0]]);
+        const readyRoom = prepareRoomForRejoin(userRooms[roomKeys[0]]);
+        setActiveRoom(readyRoom);
+        saveRoom(readyRoom);
         setActiveTab('AUCTION');
       } else {
         setActiveRoom(null);
@@ -117,23 +127,49 @@ export default function App() {
     }
   };
 
-  // Immediate logout: clears session, clears active progress from memory, locks app
+  // Immediate logout: safely saves active auction state before clearing session
   const handleLogout = () => {
+    if (activeRoom && activeRoom.status === 'AUCTION') {
+      const exitedRoom = prepareRoomForExit(activeRoom);
+      saveRoom(exitedRoom);
+    }
     logoutUser();
     setCurrentUserState(null);
     setActiveRoom(null);
     setActiveTab('LOBBY');
   };
 
+  // Re-enter or start room: guarantees starting from the exact same player lot
   const handleEnterRoom = (room: RoomState) => {
-    setActiveRoom(room);
-    setActiveRoomCode(room.code);
+    const readyRoom = prepareRoomForRejoin(room);
+    setActiveRoom(readyRoom);
+    setActiveRoomCode(readyRoom.code);
+    saveRoom(readyRoom);
     setActiveTab('AUCTION');
   };
 
+  // Leaving auction to Lobby: freezes room at current lot
   const handleLeaveAuction = () => {
-    // Return to Lobby while preserving active room session for instant re-entry
+    if (activeRoom && activeRoom.status === 'AUCTION') {
+      const exitedRoom = prepareRoomForExit(activeRoom);
+      setActiveRoom(exitedRoom);
+      saveRoom(exitedRoom);
+    }
     setActiveTab('LOBBY');
+  };
+
+  // Tab switching: freezes auction state when navigating away, restores when returning
+  const handleTabChange = (newTab: 'LOBBY' | 'AUCTION' | 'SQUADS' | 'MATCHES' | 'STANDINGS') => {
+    if (activeTab === 'AUCTION' && newTab !== 'AUCTION' && activeRoom && activeRoom.status === 'AUCTION') {
+      const exitedRoom = prepareRoomForExit(activeRoom);
+      setActiveRoom(exitedRoom);
+      saveRoom(exitedRoom);
+    } else if (newTab === 'AUCTION' && activeRoom && activeRoom.status === 'AUCTION') {
+      const readyRoom = prepareRoomForRejoin(activeRoom);
+      setActiveRoom(readyRoom);
+      saveRoom(readyRoom);
+    }
+    setActiveTab(newTab);
   };
 
   const handleUpdateRoom = (updated: RoomState) => {
@@ -212,7 +248,7 @@ export default function App() {
           currentUser={currentUser}
           activeRoom={activeRoom}
           activeTab={activeTab}
-          setActiveTab={setActiveTab}
+          setActiveTab={handleTabChange}
           onOpenAuth={() => setIsAuthModalOpen(true)}
           onLogout={handleLogout}
         />

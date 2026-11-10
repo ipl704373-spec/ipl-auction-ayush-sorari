@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import confetti from 'canvas-confetti';
-import { RoomState, Team, Player } from '../types/cricket';
+import { RoomState, Team, Player, AuctionLogEntry } from '../types/cricket';
 import { formatCurrency } from '../data/iplFranchises';
 import {
   getNextBidIncrement,
@@ -14,7 +14,9 @@ import {
   placeBidOnCurrentPlayer,
   closeBiddingForCurrentPlayer,
   advanceToNextPlayerLot,
-  finalizeCurrentPlayer
+  finalizeCurrentPlayer,
+  prepareRoomForExit,
+  prepareRoomForRejoin
 } from '../services/auctionEngine';
 import { sound } from '../services/soundFx';
 import { saveRoom, getCurrentUser } from '../services/storage';
@@ -63,7 +65,7 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
   onNavigateToSquads,
   onLeaveAuction
 }) => {
-  const [isPaused, setIsPaused] = useState(false);
+  const [isPaused, setIsPaused] = useState(room.isPaused ?? false);
   const [autoBidCeiling, setAutoBidCeiling] = useState<number | null>(null);
   const [isAutoBidding, setIsAutoBidding] = useState(false);
   const [lotOutcome, setLotOutcome] = useState<LotOutcome | null>(null);
@@ -71,6 +73,20 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
 
   const roomRef = useRef<RoomState>(room);
   roomRef.current = room;
+
+  // Window beforeunload safeguard: freezes room at current player lot if user closes/refreshes tab
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (roomRef.current.status === 'AUCTION') {
+        const exitedRoom = prepareRoomForExit(roomRef.current);
+        saveRoom(exitedRoom);
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
 
   const currentPlayer = room.playersPool[room.currentPlayerIndex] as Player | undefined;
   const currentUser = getCurrentUser();
@@ -110,7 +126,7 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
 
   // Main real-time countdown timer: counts down every second and closes bidding at zero
   useEffect(() => {
-    if (isPaused || !currentPlayer || room.status !== 'AUCTION' || lotOutcome !== null) {
+    if (isPaused || showLeaveModal || !currentPlayer || room.status !== 'AUCTION' || lotOutcome !== null) {
       return;
     }
 
@@ -139,7 +155,7 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
         };
 
         onUpdateRoom(updatedRoom);
-        saveRoom(updatedRoom);
+        saveRoom(updatedRoom, { localOnly: true });
       } else {
         // TIMER REACHED ZERO: Automatically close bidding for current player!
         sound.playHammerKnock();
@@ -206,7 +222,7 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
   // CRITICAL REQUIREMENT: In FULL_MULTIPLAYER mode, NO bot bids whatsoever! Only real players that join the room can bid.
   useEffect(() => {
     if (room.mode === 'FULL_MULTIPLAYER') return;
-    if (isPaused || !currentPlayer || room.status !== 'AUCTION' || lotOutcome !== null) return;
+    if (isPaused || showLeaveModal || !currentPlayer || room.status !== 'AUCTION' || lotOutcome !== null) return;
     if (room.timerRemaining < 2) return; // Don't interrupt final second before hammer
 
     // Random delay between 1.2s to 2.8s
@@ -238,7 +254,7 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
     return () => {
       if (botTimeoutRef.current) clearTimeout(botTimeoutRef.current);
     };
-  }, [room.currentBid, room.currentBidderTeamId, currentPlayer?.id, isPaused, room.status, lotOutcome, room.mode]);
+  }, [room.currentBid, room.currentBidderTeamId, currentPlayer?.id, isPaused, showLeaveModal, room.status, lotOutcome, room.mode]);
 
   // User Auto-Bidding check
   useEffect(() => {
@@ -260,8 +276,14 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
   // Place manual user bid
   const handleUserBid = () => {
     if (!currentPlayer || lotOutcome !== null) return;
+    if (isPaused) {
+      setIsPaused(false);
+    }
     sound.playBidPop();
-    const { updatedRoom, success, message } = placeBidOnCurrentPlayer(room, userTeam.id);
+    const { updatedRoom, success, message } = placeBidOnCurrentPlayer(
+      { ...room, isPaused: false },
+      userTeam.id
+    );
     if (success) {
       onUpdateRoom(updatedRoom);
       saveRoom(updatedRoom);
@@ -279,42 +301,63 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
     setLotOutcome(null);
   };
 
-  // User leaves the auction room
+  // User leaves the auction room: freeze and save exact player lot
   const handleConfirmLeaveAuction = () => {
+    // Freeze room at the exact current player lot with full reset timer
+    const exitedRoom = prepareRoomForExit(roomRef.current);
+
     // If in full multiplayer, broadcast leave announcement and release table if guest
     if (room.mode === 'FULL_MULTIPLAYER' && currentUser) {
       const isHost = room.hostUserId === currentUser.id;
-      const updatedTeams = room.teams.map((t) => {
+      const updatedTeams = exitedRoom.teams.map((t) => {
         if (!isHost && t.userId === currentUser.id) {
           return { ...t, userId: undefined, isBot: false };
         }
         return t;
       });
 
-      const leaveLog = {
+      const leaveLog: AuctionLogEntry = {
         id: `log-leave-${Date.now()}`,
         timestamp: Date.now(),
-        type: 'ANNOUNCEMENT' as const,
+        type: 'ANNOUNCEMENT',
         playerId: currentPlayer?.id || 'leave',
         playerName: currentUser.username,
         amount: 0,
         message: `🚪 Real Player ${currentUser.username} has left the auction arena.`
       };
 
-      const updatedRoom: RoomState = {
-        ...room,
-        teams: updatedTeams,
-        auctionLogs: [leaveLog, ...room.auctionLogs.slice(0, 48)],
-        lastUpdated: Date.now()
-      };
-      saveRoom(updatedRoom);
-      onUpdateRoom(updatedRoom);
+      exitedRoom.teams = updatedTeams;
+      exitedRoom.auctionLogs = [leaveLog, ...exitedRoom.auctionLogs.slice(0, 48)];
     }
+
+    // Persist room state for both solo and multiplayer
+    saveRoom(exitedRoom);
+    onUpdateRoom(exitedRoom);
 
     setShowLeaveModal(false);
     if (onLeaveAuction) {
       onLeaveAuction();
     }
+  };
+
+  // Navigating to squads: safely freeze auction at current lot
+  const handleNavigateToSquads = () => {
+    const exitedRoom = prepareRoomForExit(roomRef.current);
+    saveRoom(exitedRoom);
+    onUpdateRoom(exitedRoom);
+    onNavigateToSquads();
+  };
+
+  // Toggle pause and persist state to room
+  const handleTogglePause = () => {
+    const nextPaused = !isPaused;
+    setIsPaused(nextPaused);
+    const updated: RoomState = {
+      ...roomRef.current,
+      isPaused: nextPaused
+    };
+    onUpdateRoom(updated);
+    saveRoom(updated);
   };
 
   // Timer visual progress math
@@ -355,13 +398,17 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
           <span className="text-xs text-slate-400 hidden sm:inline">
             Set: <span className="text-slate-200 font-semibold">{currentPlayer?.setName}</span>
           </span>
+          <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-300 hidden md:inline-flex items-center gap-1.5">
+            <Users className="w-3 h-3 text-amber-400" />
+            <span>Min 15 Players: {room.teams.filter((t) => t.players.length >= 15).length}/{room.teams.length} Squads Done</span>
+          </span>
         </div>
 
         {/* Host Controls */}
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setIsPaused(!isPaused)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white transition-colors"
+            onClick={handleTogglePause}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white transition-colors cursor-pointer"
           >
             {isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
             {isPaused ? 'Resume Timer' : 'Pause Timer'}
@@ -369,21 +416,24 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
 
           <button
             onClick={handleSkipPlayer}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-rose-300 transition-colors"
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-rose-300 transition-colors cursor-pointer"
           >
             Pass Lot <ChevronRight className="w-3.5 h-3.5" />
           </button>
 
           <button
-            onClick={onNavigateToSquads}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-amber-400 text-slate-950 hover:bg-amber-300 transition-colors"
+            onClick={handleNavigateToSquads}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-amber-400 text-slate-950 hover:bg-amber-300 transition-colors cursor-pointer"
           >
             <Shield className="w-3.5 h-3.5" /> Squad Hub
           </button>
 
           <button
             type="button"
-            onClick={() => setShowLeaveModal(true)}
+            onClick={() => {
+              setIsPaused(true);
+              setShowLeaveModal(true);
+            }}
             title="Leave the auction arena and return to lobby"
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500/15 border border-rose-500/30 text-rose-400 hover:bg-rose-500/25 hover:text-rose-300 transition-colors cursor-pointer"
           >
@@ -605,6 +655,16 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
                         }}
                       />
                     </div>
+
+                    {isPaused && !lotOutcome && (
+                      <button
+                        type="button"
+                        onClick={handleTogglePause}
+                        className="mt-3 px-3.5 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs uppercase tracking-wider transition-colors flex items-center gap-1.5 shadow-sm cursor-pointer"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current" /> Resume Auction Timer ({room.timerRemaining}s)
+                      </button>
+                    )}
                   </div>
 
                   {/* LOT OUTCOME OVERLAY / ANNOUNCEMENT BANNER */}
@@ -674,9 +734,9 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
                     <div className="flex flex-wrap items-center justify-center gap-3">
                       <button
                         onClick={handleUserBid}
-                        disabled={!canUserBidStatus.canBid || isPaused || lotOutcome !== null}
-                        className={`py-3.5 px-8 rounded-xl font-black text-sm uppercase tracking-wider shadow-lg transition-all flex items-center gap-2.5 ${
-                          canUserBidStatus.canBid && !isPaused && lotOutcome === null
+                        disabled={!canUserBidStatus.canBid || lotOutcome !== null}
+                        className={`py-3.5 px-8 rounded-xl font-black text-sm uppercase tracking-wider shadow-lg transition-all flex items-center gap-2.5 cursor-pointer ${
+                          canUserBidStatus.canBid && lotOutcome === null
                             ? 'bg-gradient-to-r from-amber-400 via-amber-500 to-amber-600 hover:from-amber-300 hover:to-amber-500 text-slate-950 shadow-amber-500/30 scale-100 hover:scale-102 active:scale-98'
                             : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60'
                         }`}
@@ -766,9 +826,9 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
 
             <div className="grid grid-cols-2 gap-2 text-center text-xs">
               <div className="rounded-lg bg-slate-950 p-2 border border-slate-800/80">
-                <span className="text-[10px] text-slate-400 block font-mono">Squad Count</span>
-                <span className="font-bold text-slate-200">
-                  {userTeam.players.length} / 25
+                <span className="text-[10px] text-slate-400 block font-mono">Squad (Min 15)</span>
+                <span className={`font-bold font-mono ${userTeam.players.length >= 15 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {userTeam.players.length} / 15 {userTeam.players.length >= 15 ? '✓' : `(${15 - userTeam.players.length} to go)`}
                 </span>
               </div>
               <div className="rounded-lg bg-slate-950 p-2 border border-slate-800/80">
@@ -819,11 +879,14 @@ export const AuctionArena: React.FC<AuctionArenaProps> = ({
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-3 shrink-0 font-mono">
-                      <span className="text-slate-400 text-[11px]">
-                        {team.players.length}/25 ({overseas} OS)
+                    <div className="flex items-center gap-2.5 shrink-0 font-mono">
+                      <span className={`text-[11px] font-bold ${team.players.length >= 15 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {team.players.length}/15 {team.players.length >= 15 ? '✓' : ''}
                       </span>
-                      <span className="font-bold text-emerald-400">
+                      <span className="text-slate-500 text-[10px]">
+                        ({overseas} OS)
+                      </span>
+                      <span className="font-bold text-emerald-400 text-xs">
                         {formatCurrency(team.budget)}
                       </span>
                     </div>

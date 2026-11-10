@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { RoomState, Match, Team, BallData, InningsData, MatchPrizeBreakdown } from '../types/cricket';
-import { simulateFullMatch, applyMatchPrizeToRoom } from '../services/matchSimulation';
+import { simulateFullMatch, applyMatchPrizeToRoom, checkAndProgressPlayoffs } from '../services/matchSimulation';
 import { sound } from '../services/soundFx';
 import { saveRoom, getCurrentUser } from '../services/storage';
 import { formatCurrency } from '../data/iplFranchises';
@@ -27,7 +27,9 @@ import {
   TrendingUp,
   CheckCircle2,
   ArrowUpRight,
-  Flame
+  Flame,
+  Lock,
+  Layers
 } from 'lucide-react';
 
 interface MatchCenterProps {
@@ -49,6 +51,7 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
   const [liveBallIndex, setLiveBallIndex] = useState(0);
   const [liveInnings, setLiveInnings] = useState<1 | 2>(1);
   const [activeScorecardModalMatch, setActiveScorecardModalMatch] = useState<Match | null>(null);
+  const [fixtureFilter, setFixtureFilter] = useState<'ALL' | 'LEAGUE' | 'PLAYOFFS'>('ALL');
 
   const currentUser = getCurrentUser();
   const userFranchise =
@@ -56,9 +59,26 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
     room.teams.find((t) => t.isUserTeam) ||
     room.teams[0];
 
+  // Auto-progress playoffs if league matches completed or if feeder playoff matches completed
+  useEffect(() => {
+    const progressedRoom = checkAndProgressPlayoffs(room);
+    if (progressedRoom !== room) {
+      onUpdateRoom(progressedRoom);
+      saveRoom(progressedRoom);
+    }
+  }, [room]);
+
   const activeMatch = room.matches.find((m) => m.id === selectedMatchId) || room.matches[0];
   const team1 = room.teams.find((t) => t.id === activeMatch?.team1Id);
   const team2 = room.teams.find((t) => t.id === activeMatch?.team2Id);
+  const isPlayoffMatch =
+    activeMatch?.stage === 'PLAYOFF' ||
+    activeMatch?.stage === 'FINAL' ||
+    activeMatch?.id.includes('playoff') ||
+    activeMatch?.roundName.toLowerCase().includes('qualifier') ||
+    activeMatch?.roundName.toLowerCase().includes('eliminator') ||
+    activeMatch?.roundName.toLowerCase().includes('final');
+  const isMatchReadyToPlay = Boolean(activeMatch && team1 && team2);
 
   const simIntervalRef = useRef<number | null>(null);
 
@@ -213,9 +233,17 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
                 <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/70 to-transparent" />
                 
                 <div className="relative z-10 flex items-center justify-between text-xs">
-                  <span className="font-mono font-bold uppercase tracking-wider text-amber-400 bg-slate-950/80 px-2.5 py-1 rounded border border-amber-400/20 backdrop-blur-sm">
-                    {activeMatch.roundName}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-bold uppercase tracking-wider text-amber-400 bg-slate-950/80 px-2.5 py-1 rounded border border-amber-400/20 backdrop-blur-sm flex items-center gap-1.5">
+                      {isPlayoffMatch && <Trophy className="w-3.5 h-3.5 text-amber-400" />}
+                      {activeMatch.roundName}
+                    </span>
+                    {activeMatch.playoffType && (
+                      <span className="font-mono text-[10px] font-bold text-emerald-400 bg-emerald-500/20 border border-emerald-500/30 px-2 py-0.5 rounded uppercase">
+                        {activeMatch.playoffType.replace('_', ' ')}
+                      </span>
+                    )}
+                  </div>
                   <span className="text-slate-300 bg-slate-950/80 px-2.5 py-1 rounded border border-slate-700/60 font-mono">
                     Pitch: {activeMatch.pitchCondition.replace('_', ' ')}
                   </span>
@@ -550,6 +578,68 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
 
               </div>
             </div>
+          ) : activeMatch ? (
+            /* LOCKED PLAYOFF MATCH: Awaiting feeder playoff results */
+            <div className="rounded-2xl border border-amber-500/30 bg-slate-900/90 shadow-2xl backdrop-blur-md overflow-hidden p-6 sm:p-8 text-center space-y-6">
+              <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-amber-400/10 border border-amber-400/30 text-amber-400 mx-auto shadow-inner">
+                <Lock className="w-7 h-7" />
+              </div>
+
+              <div>
+                <span className="text-xs font-mono font-bold uppercase tracking-widest text-amber-400 bg-amber-400/10 px-3 py-1 rounded-full border border-amber-400/30 inline-block mb-2">
+                  Playoff Stage Fixture · Awaiting Feeder Results
+                </span>
+                <h2 className="text-xl sm:text-2xl font-black text-white font-display uppercase tracking-wide">
+                  {activeMatch.roundName}
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-400 max-w-lg mx-auto mt-2 leading-relaxed">
+                  This playoff fixture will automatically populate with qualified franchises once previous matches conclude.
+                </p>
+              </div>
+
+              {/* Placeholder clash mockup */}
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-4 py-4 max-w-xl mx-auto">
+                <div className="w-full sm:w-1/2 p-4 rounded-xl border border-dashed border-amber-400/40 bg-slate-950/60 text-center">
+                  <span className="text-[10px] font-mono uppercase text-slate-400 block mb-1">Team 1</span>
+                  <span className="font-bold text-amber-300 font-display text-sm block">
+                    {team1 ? team1.name : (activeMatch.placeholderTeam1Text || 'TBD (Awaiting Result)')}
+                  </span>
+                </div>
+
+                <span className="font-black font-mono text-amber-400 text-base">VS</span>
+
+                <div className="w-full sm:w-1/2 p-4 rounded-xl border border-dashed border-amber-400/40 bg-slate-950/60 text-center">
+                  <span className="text-[10px] font-mono uppercase text-slate-400 block mb-1">Team 2</span>
+                  <span className="font-bold text-amber-300 font-display text-sm block">
+                    {team2 ? team2.name : (activeMatch.placeholderTeam2Text || 'TBD (Awaiting Result)')}
+                  </span>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-slate-300 max-w-lg mx-auto">
+                <p className="font-mono text-amber-400 font-bold mb-1">IPL Playoff Rules:</p>
+                {activeMatch.playoffType === 'QUALIFIER_2' && (
+                  <p>Qualifier 2 features the <strong>Loser of Qualifier 1</strong> vs the <strong>Winner of the Eliminator</strong>. Please simulate Qualifier 1 and the Eliminator first!</p>
+                )}
+                {activeMatch.playoffType === 'FINAL' && (
+                  <p>The Grand Final features the <strong>Winner of Qualifier 1</strong> vs the <strong>Winner of Qualifier 2</strong> for the coveted IPL Trophy and ₹5.00 Cr purse reward!</p>
+                )}
+              </div>
+
+              <div className="pt-2">
+                <button
+                  onClick={() => {
+                    const firstPlayable = room.matches.find(
+                      (m) => m.status === 'SCHEDULED' && room.teams.some((t) => t.id === m.team1Id) && room.teams.some((t) => t.id === m.team2Id)
+                    );
+                    if (firstPlayable) setSelectedMatchId(firstPlayable.id);
+                  }}
+                  className="px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs uppercase tracking-wider transition-colors shadow-lg inline-flex items-center gap-2"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" /> Select Next Playable Match
+                </button>
+              </div>
+            </div>
           ) : (
             <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-8 text-center text-slate-400 text-sm">
               Select a fixture from the right column to inspect and simulate.
@@ -560,19 +650,70 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
         {/* RIGHT: TOURNAMENT FIXTURES LIST (4 Cols) */}
         <div className="lg:col-span-4 space-y-4">
           <div className="rounded-2xl border border-slate-800 bg-slate-900/90 p-4 backdrop-blur-md shadow-xl">
-            <h3 className="font-bold text-xs text-slate-300 uppercase tracking-wider mb-3 flex items-center justify-between">
-              <span>Tournament Fixtures</span>
-              <span className="text-[10px] text-slate-500 font-mono">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-xs text-slate-300 uppercase tracking-wider">
+                Fixtures & Schedule
+              </h3>
+              <span className="text-[10px] text-slate-400 font-mono">
                 {room.matches.filter((m) => m.status === 'COMPLETED').length} / {room.matches.length} Done
               </span>
-            </h3>
+            </div>
+
+            {/* Stage filter pills */}
+            <div className="grid grid-cols-3 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800 mb-3 text-[11px] font-mono">
+              <button
+                onClick={() => setFixtureFilter('ALL')}
+                className={`py-1 rounded-lg font-bold transition-colors ${
+                  fixtureFilter === 'ALL'
+                    ? 'bg-amber-400 text-slate-950'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                All ({room.matches.length})
+              </button>
+              <button
+                onClick={() => setFixtureFilter('LEAGUE')}
+                className={`py-1 rounded-lg font-bold transition-colors ${
+                  fixtureFilter === 'LEAGUE'
+                    ? 'bg-amber-400 text-slate-950'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                League ({room.matches.filter((m) => m.stage === 'LEAGUE' || (!m.stage && !m.id.includes('playoff'))).length})
+              </button>
+              <button
+                onClick={() => setFixtureFilter('PLAYOFFS')}
+                className={`py-1 rounded-lg font-bold transition-colors ${
+                  fixtureFilter === 'PLAYOFFS'
+                    ? 'bg-amber-400 text-slate-950'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Playoffs ({room.matches.filter((m) => m.stage === 'PLAYOFF' || m.stage === 'FINAL' || m.id.includes('playoff')).length})
+              </button>
+            </div>
 
             <div className="space-y-2.5 max-h-[600px] overflow-y-auto pr-1">
-              {room.matches.map((match) => {
+              {room.matches
+                .filter((match) => {
+                  const isPlayoff =
+                    match.stage === 'PLAYOFF' ||
+                    match.stage === 'FINAL' ||
+                    match.id.includes('playoff');
+                  if (fixtureFilter === 'LEAGUE') return !isPlayoff;
+                  if (fixtureFilter === 'PLAYOFFS') return isPlayoff;
+                  return true;
+                })
+                .map((match) => {
                 const t1 = room.teams.find((t) => t.id === match.team1Id);
                 const t2 = room.teams.find((t) => t.id === match.team2Id);
                 const isSelected = match.id === selectedMatchId;
                 const isCompleted = match.status === 'COMPLETED';
+                const isPlayoff =
+                  match.stage === 'PLAYOFF' ||
+                  match.stage === 'FINAL' ||
+                  match.id.includes('playoff');
+                const isLocked = !t1 || !t2;
 
                 return (
                   <div
@@ -580,17 +721,26 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
                     onClick={() => setSelectedMatchId(match.id)}
                     className={`cursor-pointer rounded-xl p-3 border transition-all text-xs ${
                       isSelected
-                        ? 'border-amber-400 bg-amber-400/10 shadow-md'
+                        ? 'border-amber-400 bg-amber-400/10 shadow-md ring-1 ring-amber-400/40'
+                        : isPlayoff
+                        ? 'border-amber-500/30 bg-slate-950/80 hover:border-amber-400/60'
                         : 'border-slate-800 bg-slate-950/70 hover:border-slate-700'
                     }`}
                   >
                     <div className="flex items-center justify-between mb-2">
-                      <span className="font-semibold text-slate-400 text-[10px] uppercase font-mono">
-                        {match.roundName}
-                      </span>
+                      <div className="flex items-center gap-1.5 truncate">
+                        {isPlayoff && <Trophy className="w-3 h-3 text-amber-400 shrink-0" />}
+                        <span className={`font-semibold text-[10px] uppercase font-mono truncate ${isPlayoff ? 'text-amber-300 font-bold' : 'text-slate-400'}`}>
+                          {match.roundName}
+                        </span>
+                      </div>
                       {isCompleted ? (
                         <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
                           COMPLETED
+                        </span>
+                      ) : isLocked ? (
+                        <span className="text-[10px] font-bold text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700 flex items-center gap-1">
+                          <Lock className="w-2.5 h-2.5" /> TBD
                         </span>
                       ) : (
                         <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
@@ -601,8 +751,16 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
 
                     <div className="flex items-center justify-between font-bold text-slate-200 mb-1">
                       <div className="flex items-center gap-1.5 truncate">
-                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: t1?.primaryColor }} />
-                        <span className="truncate">{t1?.shortName || 'T1'}</span>
+                        {t1 ? (
+                          <>
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: t1.primaryColor }} />
+                            <span className="truncate">{t1.shortName}</span>
+                          </>
+                        ) : (
+                          <span className="text-slate-500 italic truncate font-mono text-[11px]">
+                            {match.placeholderTeam1Text || 'TBD'}
+                          </span>
+                        )}
                       </div>
                       {isCompleted && match.team1Innings && (
                         <span className="font-mono text-amber-400">
@@ -613,8 +771,16 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
 
                     <div className="flex items-center justify-between font-bold text-slate-200">
                       <div className="flex items-center gap-1.5 truncate">
-                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: t2?.primaryColor }} />
-                        <span className="truncate">{t2?.shortName || 'T2'}</span>
+                        {t2 ? (
+                          <>
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: t2.primaryColor }} />
+                            <span className="truncate">{t2.shortName}</span>
+                          </>
+                        ) : (
+                          <span className="text-slate-500 italic truncate font-mono text-[11px]">
+                            {match.placeholderTeam2Text || 'TBD'}
+                          </span>
+                        )}
                       </div>
                       {isCompleted && match.team2Innings && (
                         <span className="font-mono text-amber-400">
@@ -639,6 +805,8 @@ export const MatchCenter: React.FC<MatchCenterProps> = ({
             </div>
           </div>
         </div>
+
+
 
       </div>
 

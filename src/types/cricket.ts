@@ -185,6 +185,10 @@ export interface Match {
   team1Prize?: MatchPrizeBreakdown;
   team2Prize?: MatchPrizeBreakdown;
   prizeAwarded?: boolean;
+  stage?: 'LEAGUE' | 'PLAYOFF' | 'FINAL';
+  playoffType?: 'QUALIFIER_1' | 'ELIMINATOR' | 'QUALIFIER_2' | 'FINAL';
+  placeholderTeam1Text?: string;
+  placeholderTeam2Text?: string;
 }
 
 export interface PointsTableEntry {

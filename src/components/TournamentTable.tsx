@@ -7,7 +7,7 @@ import React from 'react';
 import { RoomState } from '../types/cricket';
 import { calculatePointsTable, getTournamentCapLeaders } from '../services/matchSimulation';
 import { formatCurrency } from '../data/iplFranchises';
-import { Trophy, Award, TrendingUp, Shield, Flame, Sparkles, Coins } from 'lucide-react';
+import { Trophy, Award, TrendingUp, Shield, Flame, Sparkles, Coins, Zap, CheckCircle2 } from 'lucide-react';
 
 interface TournamentTableProps {
   room: RoomState;
@@ -21,6 +21,29 @@ export const TournamentTable: React.FC<TournamentTableProps> = ({
   const pointsTable = calculatePointsTable(room.teams, room.matches);
   const { orangeCapLeader, orangeCapTop5, purpleCapLeader, purpleCapTop5 } =
     getTournamentCapLeaders(room.matches);
+
+  const leagueMatches = room.matches.filter(
+    (m) =>
+      m.stage === 'LEAGUE' ||
+      (!m.stage &&
+        !m.id.includes('playoff') &&
+        !m.roundName.toLowerCase().includes('qualifier') &&
+        !m.roundName.toLowerCase().includes('eliminator') &&
+        !m.roundName.toLowerCase().includes('final'))
+  );
+  const allLeagueCompleted = leagueMatches.length > 0 && leagueMatches.every((m) => m.status === 'COMPLETED');
+  const leagueCompletedCount = leagueMatches.filter((m) => m.status === 'COMPLETED').length;
+
+  const finalMatch = room.matches.find(
+    (m) =>
+      m.playoffType === 'FINAL' ||
+      m.id === 'match-playoff-final' ||
+      (m.roundName.toLowerCase().includes('final') &&
+        !m.roundName.toLowerCase().includes('semi') &&
+        !m.roundName.toLowerCase().includes('quarter'))
+  );
+  const tournamentChampion =
+    finalMatch?.status === 'COMPLETED' ? room.teams.find((t) => t.id === finalMatch.winnerId) : null;
 
   const totalPrizeDisbursed = room.matches.reduce((sum, m) => {
     return sum + (m.team1Prize?.totalPrize || 0) + (m.team2Prize?.totalPrize || 0);
@@ -170,15 +193,91 @@ export const TournamentTable: React.FC<TournamentTableProps> = ({
 
       </div>
 
+      {/* League & Playoff Status Notification Banner */}
+      {tournamentChampion ? (
+        <div className="rounded-2xl border border-amber-400/40 bg-gradient-to-r from-amber-500/20 via-amber-500/10 to-slate-950 p-5 shadow-2xl relative overflow-hidden backdrop-blur-md">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-400 text-slate-950 flex items-center justify-center font-black shadow-lg">
+                <Trophy className="w-7 h-7" />
+              </div>
+              <div>
+                <span className="text-[10px] font-mono font-bold uppercase text-amber-400 bg-amber-400/20 px-2 py-0.5 rounded border border-amber-400/30">
+                  IPL Champions
+                </span>
+                <h2 className="text-xl sm:text-2xl font-black text-white font-display uppercase tracking-wide mt-1">
+                  {tournamentChampion.name}
+                </h2>
+                <p className="text-xs text-slate-300">
+                  Crowned IPL Champions! ₹5.00 Cr Championship Bonus awarded to franchise purse.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onNavigateToMatches}
+              className="px-4 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs uppercase tracking-wider transition-colors shadow-md flex items-center gap-1.5"
+            >
+              View Grand Final Scorecard →
+            </button>
+          </div>
+        </div>
+      ) : allLeagueCompleted ? (
+        <div className="rounded-2xl border border-emerald-500/40 bg-gradient-to-r from-emerald-500/20 via-slate-900 to-slate-950 p-5 shadow-2xl relative overflow-hidden backdrop-blur-md">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-emerald-400 text-slate-950 flex items-center justify-center font-bold shadow-lg">
+                <Trophy className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base sm:text-lg font-black text-white font-display uppercase tracking-wide">
+                    League Stage Complete — Top 4 Decided By Points Table!
+                  </h2>
+                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/20 border border-emerald-500/30 px-2 py-0.5 rounded uppercase font-mono">
+                    Playoffs Live
+                  </span>
+                </div>
+                <p className="text-xs text-slate-300 mt-1">
+                  <strong>Rank 1 ({pointsTable[0]?.shortName})</strong> & <strong>Rank 2 ({pointsTable[1]?.shortName})</strong> have qualified for Qualifier 1 (Double Chance) · <strong>Rank 3 ({pointsTable[2]?.shortName})</strong> & <strong>Rank 4 ({pointsTable[3]?.shortName})</strong> contest the Eliminator!
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onNavigateToMatches}
+              className="px-4 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs uppercase tracking-wider transition-colors shadow-md flex items-center gap-1.5 shrink-0"
+            >
+              <Flame className="w-4 h-4 fill-current text-rose-600" /> Play Playoffs Now →
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2">
+            <Shield className="w-4 h-4 text-amber-400" />
+            <span className="text-slate-300">
+              League Stage in Progress: <strong className="text-white font-mono">{leagueCompletedCount} / {leagueMatches.length}</strong> matches completed.
+            </span>
+          </div>
+          <span className="text-slate-400 text-[11px] font-mono">
+            Only League matches determine the Top 4 qualifiers for the IPL Playoffs!
+          </span>
+        </div>
+      )}
+
       {/* Main Points Table */}
       <div className="rounded-2xl border border-slate-800 bg-slate-900/90 shadow-2xl backdrop-blur-md overflow-hidden">
         <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-          <h2 className="text-sm font-bold text-white uppercase tracking-wider font-display">
-            Official Standings & Net Run Rate (NRR)
-          </h2>
+          <div>
+            <h2 className="text-sm font-bold text-white uppercase tracking-wider font-display">
+              Official Standings & Net Run Rate (NRR)
+            </h2>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Only league matches count towards points, wins, and NRR
+            </p>
+          </div>
           <div className="flex items-center gap-2 text-xs">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-            <span className="text-slate-400">Playoffs Zone (Top 4)</span>
+            <span className="text-slate-400 font-mono text-[11px]">Playoffs Zone (Top 4)</span>
           </div>
         </div>
 
@@ -194,6 +293,7 @@ export const TournamentTable: React.FC<TournamentTableProps> = ({
                 <th className="py-3 px-3 text-center">T</th>
                 <th className="py-3 px-4 text-center font-bold text-white">Pts</th>
                 <th className="py-3 px-4 text-right">NRR</th>
+                <th className="py-3 px-4 text-center">Playoff Status</th>
                 <th className="py-3 px-4 text-right text-emerald-400">Purse Balance</th>
               </tr>
             </thead>
@@ -249,6 +349,31 @@ export const TournamentTable: React.FC<TournamentTableProps> = ({
                       <span className={row.nrr >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
                         {row.nrr > 0 ? `+${row.nrr.toFixed(3)}` : row.nrr.toFixed(3)}
                       </span>
+                    </td>
+                    <td className="py-3.5 px-4 text-center">
+                      {allLeagueCompleted ? (
+                        index === 0 || index === 1 ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                            <Trophy className="w-3 h-3" /> Qualifier 1 (Double Chance)
+                          </span>
+                        ) : index === 2 || index === 3 ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold font-mono bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                            <Zap className="w-3 h-3" /> Eliminator (Knockout)
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono text-slate-500">
+                            Eliminated
+                          </span>
+                        )
+                      ) : isPlayoffZone ? (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20">
+                          Top 4 (Playoff Zone)
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono text-slate-500">
+                          In Contention
+                        </span>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono font-bold text-emerald-400">
                       {formatCurrency(franchise?.budget || 0)}

@@ -179,9 +179,14 @@ export const SquadHub: React.FC<SquadHubProps> = ({
       {/* Squad KPI Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3.5">
-          <span className="text-[10px] text-slate-500 uppercase font-mono block">Squad Strength</span>
-          <span className="text-lg font-bold font-mono text-white">
-            {currentViewTeam.players.length} <span className="text-xs text-slate-500">/ 25 Max</span>
+          <span className="text-[10px] text-slate-500 uppercase font-mono block">Squad Strength (Min 15)</span>
+          <span className={`text-lg font-bold font-mono ${currentViewTeam.players.length >= 15 ? 'text-emerald-400' : 'text-amber-400'}`}>
+            {currentViewTeam.players.length} <span className="text-xs text-slate-500">/ 15 Min</span>
+            {currentViewTeam.players.length >= 15 ? (
+              <span className="ml-1 text-[11px] text-emerald-400 font-sans font-bold">✓ Met</span>
+            ) : (
+              <span className="ml-1 text-[11px] text-amber-400 font-sans font-bold">({15 - currentViewTeam.players.length} needed)</span>
+            )}
           </span>
         </div>
 

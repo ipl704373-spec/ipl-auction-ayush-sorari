@@ -104,12 +104,40 @@ export const subscribeToRoomBroadcast = (onUpdate: (room: RoomState) => void) =>
   };
 };
 
-// Real-Time Cloud Firestore Room Listener across all devices
+// Real-Time Cross-Device Room Listener: combines SSE server stream and Cloud Firestore
 export const subscribeToCloudRoom = (roomCode: string, onUpdate: (room: RoomState) => void) => {
+  const normalized = roomCode.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  let active = true;
+
+  // 1. Server-Sent Events (SSE) from Express Full-Stack Server (ultra-fast cross-device sync)
+  let eventSource: EventSource | null = null;
   try {
-    const unsub = onSnapshot(
-      doc(db, 'rooms', roomCode.toUpperCase()),
+    eventSource = new EventSource(`/api/rooms/${normalized}/events`);
+    eventSource.onmessage = (event) => {
+      if (!active) return;
+      try {
+        const data = JSON.parse(event.data);
+        if (data?.type === 'ROOM_UPDATE' && data?.room) {
+          onUpdate(data.room);
+        }
+      } catch {
+        // json parse fallback
+      }
+    };
+    eventSource.onerror = () => {
+      // Automatic browser reconnect
+    };
+  } catch (err) {
+    console.warn('SSE subscription notice:', err);
+  }
+
+  // 2. Cloud Firestore snapshot listener (fallback)
+  let unsubFirestore = () => {};
+  try {
+    unsubFirestore = onSnapshot(
+      doc(db, 'rooms', normalized),
       (snapshot) => {
+        if (!active) return;
         if (snapshot.exists()) {
           const data = snapshot.data();
           if (data && data.stateJson) {
@@ -126,11 +154,17 @@ export const subscribeToCloudRoom = (roomCode: string, onUpdate: (room: RoomStat
         console.warn('Firestore room snapshot notice:', error.message);
       }
     );
-    return unsub;
   } catch (err) {
     console.warn('Firestore subscription fallback:', err);
-    return () => {};
   }
+
+  return () => {
+    active = false;
+    if (eventSource) {
+      eventSource.close();
+    }
+    unsubFirestore();
+  };
 };
 
 // Users management
@@ -517,8 +551,32 @@ export const setActiveRoomCode = (code: string | null) => {
   }
 };
 
-// Saves room progress strictly scoped to the active logged-in user
-export const saveRoom = (room: RoomState) => {
+// Shared device-level room registry (accessible across accounts/tabs on the same browser)
+const STORAGE_SHARED_ROOMS_KEY = 'ipl_arena_shared_rooms_v1';
+
+export const getSharedRooms = (): Record<string, RoomState> => {
+  try {
+    const raw = localStorage.getItem(STORAGE_SHARED_ROOMS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+};
+
+export const saveSharedRoom = (room: RoomState) => {
+  try {
+    const shared = getSharedRooms();
+    const code = room.code.toUpperCase();
+    room.lastUpdated = Date.now();
+    shared[code] = room;
+    localStorage.setItem(STORAGE_SHARED_ROOMS_KEY, JSON.stringify(shared));
+  } catch (err) {
+    console.warn('Failed to save shared room locally:', err);
+  }
+};
+
+// Saves room progress scoped to user, device registry, Express server, and Cloud Firestore
+export const saveRoom = async (room: RoomState, options?: { localOnly?: boolean }): Promise<void> => {
   const user = getCurrentUser();
   if (!user) {
     console.warn('Cannot save room progress: User is not authenticated.');
@@ -526,15 +584,35 @@ export const saveRoom = (room: RoomState) => {
   }
 
   try {
+    const normalizedCode = room.code.toUpperCase();
+    room.code = normalizedCode;
     room.lastUpdated = Date.now();
-    // 1. Save in user's scoped storage
+
+    // 1. Save in user's scoped storage and shared device registry
     saveUserRoom(user.id, room);
-    setUserActiveRoomCode(user.id, room.code);
+    saveSharedRoom(room);
+    setUserActiveRoomCode(user.id, normalizedCode);
     broadcastRoomUpdate(room);
 
-    // 2. Persist to Cloud Firestore for cross-device live sync
-    setDoc(doc(db, 'rooms', room.code), {
-      code: room.code,
+    // If localOnly (like rapid 1-second countdown ticks), skip network requests to conserve bandwidth & quota
+    if (options?.localOnly) {
+      return;
+    }
+
+    // 2. Persist to Express Full-Stack Server for instant zero-latency cross-device multiplayer
+    try {
+      await fetch('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(room)
+      });
+    } catch {
+      // Non-blocking network fallback
+    }
+
+    // 3. Persist to Cloud Firestore for cloud backup (handles quota errors gracefully)
+    setDoc(doc(db, 'rooms', normalizedCode), {
+      code: normalizedCode,
       name: room.name,
       hostUserId: room.hostUserId || user.id,
       mode: room.mode,
@@ -542,14 +620,15 @@ export const saveRoom = (room: RoomState) => {
       lastUpdated: room.lastUpdated,
       stateJson: JSON.stringify(room),
     }).catch((err) => {
-      console.warn('Firestore room sync notice:', err.message);
+      // Quota exceeded or permission notice - doesn't disrupt user gameplay
+      console.warn('Firestore room sync notice:', err?.message || err);
     });
 
-    // 3. Update user doc with active room code in Firestore
+    // 4. Update user doc with active room code in Firestore
     setDoc(
       doc(db, 'users', user.id),
       {
-        activeRoomCode: room.code,
+        activeRoomCode: normalizedCode,
         lastUpdated: Date.now(),
       },
       { merge: true }
@@ -559,37 +638,68 @@ export const saveRoom = (room: RoomState) => {
   }
 };
 
-// Retrieve a room by code (scoped to user or Cloud Firestore)
+// Retrieve a room by 6-digit code across all available layers
 export const getRoomByCode = async (code: string): Promise<RoomState | null> => {
-  const normalized = code.toUpperCase();
+  const normalized = code.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  if (!normalized) return null;
   const user = getCurrentUser();
 
-  // 1. Check user-scoped rooms first
+  let candidateRoom: RoomState | null = null;
+
+  // 1. Check local user storage & shared registry
   if (user) {
     const userRooms = getUserRooms(user.id);
     if (userRooms[normalized]) {
-      return userRooms[normalized];
+      candidateRoom = userRooms[normalized];
+    }
+  }
+  if (!candidateRoom) {
+    const sharedRooms = getSharedRooms();
+    if (sharedRooms[normalized]) {
+      candidateRoom = sharedRooms[normalized];
     }
   }
 
-  // 2. Check Cloud Firestore
+  // 2. Query Express server for live cross-device / real-time multiplayer room state
   try {
-    const snap = await getDoc(doc(db, 'rooms', normalized));
-    if (snap.exists()) {
-      const data = snap.data();
-      if (data && data.stateJson) {
-        const parsed: RoomState = JSON.parse(data.stateJson);
-        if (user) {
-          saveUserRoom(user.id, parsed); // Cache under user's account
+    const res = await fetch(`/api/rooms/${normalized}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.success && data?.room) {
+        const serverRoom = data.room as RoomState;
+        // If candidate exists, use whichever is newer
+        if (!candidateRoom || (serverRoom.lastUpdated || 0) >= (candidateRoom.lastUpdated || 0)) {
+          candidateRoom = serverRoom;
         }
-        return parsed;
       }
     }
   } catch (err) {
-    console.warn('Firestore room fetch notice:', err);
+    console.warn('Server room fetch notice:', err);
   }
 
-  return null;
+  // 3. Fallback to Cloud Firestore if candidate is still not found
+  if (!candidateRoom) {
+    try {
+      const snap = await getDoc(doc(db, 'rooms', normalized));
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data && data.stateJson) {
+          candidateRoom = JSON.parse(data.stateJson) as RoomState;
+        }
+      }
+    } catch (err) {
+      console.warn('Firestore room fetch notice:', err);
+    }
+  }
+
+  if (candidateRoom) {
+    if (user) {
+      saveUserRoom(user.id, candidateRoom);
+    }
+    saveSharedRoom(candidateRoom);
+  }
+
+  return candidateRoom;
 };
 
 // Generate unique 6-digit room code

@@ -115,12 +115,11 @@ export const generateTournamentFixtures = (
     }
   } else {
     // Round robin style
-    // Quick League: 4 teams (6 matches) + Final
-    // Mini-Tournament: 4 teams
-    // Full Season: All pairings
+    // Quick League: 4 teams (6 matches)
+    // Full Season: All participating franchises (up to 8 teams = 28 matches)
     const leagueTeams = format === 'QUICK_LEAGUE' || format === 'MINI_TOURNAMENT'
       ? participatingTeams.slice(0, 4)
-      : participatingTeams.slice(0, 6);
+      : participatingTeams;
 
     for (let i = 0; i < leagueTeams.length; i++) {
       for (let j = i + 1; j < leagueTeams.length; j++) {
@@ -128,6 +127,7 @@ export const generateTournamentFixtures = (
           id: `match-l-${matchCounter}`,
           roundNumber: 1,
           roundName: `League Match ${matchCounter}`,
+          stage: 'LEAGUE',
           team1Id: leagueTeams[i].id,
           team2Id: leagueTeams[j].id,
           status: 'SCHEDULED',
@@ -137,29 +137,8 @@ export const generateTournamentFixtures = (
         matchCounter++;
       }
     }
-
-    // Playoffs
-    matches.push({
-      id: `match-playoff-q1`,
-      roundNumber: 2,
-      roundName: 'Qualifier 1 (Top 2)',
-      team1Id: leagueTeams[0].id,
-      team2Id: leagueTeams[1]?.id || leagueTeams[0].id,
-      status: 'SCHEDULED',
-      pitchCondition: pitch,
-      currentInnings: 1
-    });
-
-    matches.push({
-      id: `match-playoff-final`,
-      roundNumber: 3,
-      roundName: 'IPL Championship Final',
-      team1Id: leagueTeams[0].id,
-      team2Id: leagueTeams[1]?.id || leagueTeams[0].id,
-      status: 'SCHEDULED',
-      pitchCondition: pitch,
-      currentInnings: 1
-    });
+    // CRITICAL REQUIREMENT: ONLY league matches are fixed in advance!
+    // The playoffs will be decided after the league matches end and the points table will determine it.
   }
 
   return matches;
@@ -558,6 +537,17 @@ export const calculatePointsTable = (teams: Team[], matches: Match[]): PointsTab
   });
 
   matches.forEach((m) => {
+    // Only LEAGUE matches count toward the official points table!
+    if (
+      m.stage === 'PLAYOFF' ||
+      m.stage === 'FINAL' ||
+      m.id.includes('playoff') ||
+      m.roundName.toLowerCase().includes('qualifier') ||
+      m.roundName.toLowerCase().includes('eliminator') ||
+      m.roundName.toLowerCase().includes('final')
+    ) {
+      return;
+    }
     if (m.status !== 'COMPLETED' || !m.team1Innings || !m.team2Innings) return;
 
     const t1Entry = tableMap[m.team1Id];
@@ -600,13 +590,223 @@ export const calculatePointsTable = (teams: Team[], matches: Match[]): PointsTab
     return entry;
   });
 
-  // Sort by Points, then by NRR
+  // Sort by Points, then by NRR, then by total wins
   list.sort((a, b) => {
     if (b.points !== a.points) return b.points - a.points;
-    return b.nrr - a.nrr;
+    if (b.nrr !== a.nrr) return b.nrr - a.nrr;
+    return b.won - a.won;
   });
 
   return list;
+};
+
+// Evaluates league completion and determines / progresses IPL Playoffs dynamically based on the final Points Table
+export const checkAndProgressPlayoffs = (room: RoomState): RoomState => {
+  const matches = [...room.matches];
+  const leagueMatches = matches.filter(
+    (m) =>
+      m.stage === 'LEAGUE' ||
+      (!m.stage &&
+        !m.id.includes('playoff') &&
+        !m.roundName.toLowerCase().includes('qualifier') &&
+        !m.roundName.toLowerCase().includes('eliminator') &&
+        !m.roundName.toLowerCase().includes('final'))
+  );
+
+  if (leagueMatches.length === 0) return room;
+
+  const allLeagueCompleted = leagueMatches.every((m) => m.status === 'COMPLETED');
+  const existingPlayoffs = matches.filter(
+    (m) => m.stage === 'PLAYOFF' || m.stage === 'FINAL' || m.id.includes('playoff')
+  );
+
+  // 1. If all league matches are done and playoffs have not been unlocked yet:
+  if (allLeagueCompleted && existingPlayoffs.length === 0) {
+    const standings = calculatePointsTable(room.teams, matches);
+    if (standings.length < 4) return room;
+
+    const rank1 = standings[0];
+    const rank2 = standings[1];
+    const rank3 = standings[2];
+    const rank4 = standings[3];
+
+    const pitch = room.pitchCondition || 'BALANCED';
+
+    // 1. Qualifier 1: Rank 1 vs Rank 2 (Winner goes to Grand Final, Loser to Qualifier 2)
+    const q1: Match = {
+      id: 'match-playoff-q1',
+      roundNumber: 2,
+      roundName: 'Qualifier 1 (Rank 1 vs Rank 2)',
+      stage: 'PLAYOFF',
+      playoffType: 'QUALIFIER_1',
+      team1Id: rank1.teamId,
+      team2Id: rank2.teamId,
+      status: 'SCHEDULED',
+      pitchCondition: pitch,
+      currentInnings: 1
+    };
+
+    // 2. Eliminator: Rank 3 vs Rank 4 (Winner goes to Qualifier 2, Loser is eliminated)
+    const elim: Match = {
+      id: 'match-playoff-elim',
+      roundNumber: 2,
+      roundName: 'Eliminator (Rank 3 vs Rank 4)',
+      stage: 'PLAYOFF',
+      playoffType: 'ELIMINATOR',
+      team1Id: rank3.teamId,
+      team2Id: rank4.teamId,
+      status: 'SCHEDULED',
+      pitchCondition: pitch,
+      currentInnings: 1
+    };
+
+    // 3. Qualifier 2: Loser Q1 vs Winner Eliminator (Unlocked when Q1 & Eliminator complete)
+    const q2: Match = {
+      id: 'match-playoff-q2',
+      roundNumber: 3,
+      roundName: 'Qualifier 2 (Loser Q1 vs Winner Eliminator)',
+      stage: 'PLAYOFF',
+      playoffType: 'QUALIFIER_2',
+      team1Id: '',
+      team2Id: '',
+      placeholderTeam1Text: 'Loser of Qualifier 1',
+      placeholderTeam2Text: 'Winner of Eliminator',
+      status: 'SCHEDULED',
+      pitchCondition: pitch,
+      currentInnings: 1
+    };
+
+    // 4. IPL Grand Final: Winner Q1 vs Winner Q2 (Unlocked when Q1 & Q2 complete)
+    const finalMatch: Match = {
+      id: 'match-playoff-final',
+      roundNumber: 4,
+      roundName: 'IPL Championship Final (Winner Q1 vs Winner Q2)',
+      stage: 'FINAL',
+      playoffType: 'FINAL',
+      team1Id: '',
+      team2Id: '',
+      placeholderTeam1Text: 'Winner of Qualifier 1',
+      placeholderTeam2Text: 'Winner of Qualifier 2',
+      status: 'SCHEDULED',
+      pitchCondition: pitch,
+      currentInnings: 1
+    };
+
+    const announcementLog = {
+      id: `log-playoffs-${Date.now()}`,
+      timestamp: Date.now(),
+      type: 'ANNOUNCEMENT' as const,
+      playerId: 'playoffs-unlocked',
+      playerName: 'Playoffs Unlocked',
+      amount: 0,
+      message: `🏆 LEAGUE STAGE COMPLETE! Points table finalized: 1. ${rank1.shortName}, 2. ${rank2.shortName}, 3. ${rank3.shortName}, 4. ${rank4.shortName} have qualified for the IPL Playoffs! Qualifier 1: ${rank1.shortName} vs ${rank2.shortName} | Eliminator: ${rank3.shortName} vs ${rank4.shortName}.`
+    };
+
+    return {
+      ...room,
+      matches: [...matches, q1, elim, q2, finalMatch],
+      auctionLogs: [announcementLog, ...(room.auctionLogs || []).slice(0, 48)],
+      lastUpdated: Date.now()
+    };
+  }
+
+  // 2. If playoffs exist, dynamically advance Qualifier 2 and Final as feeder matches complete
+  if (existingPlayoffs.length > 0) {
+    let matchesChanged = false;
+    const extraLogs: any[] = [];
+
+    const q1 = matches.find((m) => m.playoffType === 'QUALIFIER_1' || m.id === 'match-playoff-q1');
+    const elim = matches.find((m) => m.playoffType === 'ELIMINATOR' || m.id === 'match-playoff-elim');
+    const q2 = matches.find((m) => m.playoffType === 'QUALIFIER_2' || m.id === 'match-playoff-q2');
+    const finalMatch = matches.find((m) => m.playoffType === 'FINAL' || m.id === 'match-playoff-final');
+
+    // Update Qualifier 2 once Q1 and Eliminator are done
+    if (q1 && elim && q2 && q1.status === 'COMPLETED' && elim.status === 'COMPLETED') {
+      const q1LoserId = q1.winnerId === q1.team1Id ? q1.team2Id : q1.team1Id;
+      const elimWinnerId = elim.winnerId;
+
+      if (q1LoserId && elimWinnerId && (q2.team1Id !== q1LoserId || q2.team2Id !== elimWinnerId)) {
+        const t1 = room.teams.find((t) => t.id === q1LoserId);
+        const t2 = room.teams.find((t) => t.id === elimWinnerId);
+
+        q2.team1Id = q1LoserId;
+        q2.team2Id = elimWinnerId;
+        q2.placeholderTeam1Text = undefined;
+        q2.placeholderTeam2Text = undefined;
+        matchesChanged = true;
+
+        extraLogs.push({
+          id: `log-q2-${Date.now()}`,
+          timestamp: Date.now(),
+          type: 'ANNOUNCEMENT',
+          playerId: 'q2-lineup',
+          playerName: 'Qualifier 2 Confirmed',
+          amount: 0,
+          message: `🔥 QUALIFIER 2 CONFIRMED: ${t1?.shortName || 'Team 1'} vs ${t2?.shortName || 'Team 2'}! Winner books the final ticket to the IPL Championship Final.`
+        });
+      }
+    }
+
+    // Update Grand Final once Q1 and Q2 are done
+    if (q1 && q2 && finalMatch && q1.status === 'COMPLETED' && q2.status === 'COMPLETED') {
+      const q1WinnerId = q1.winnerId;
+      const q2WinnerId = q2.winnerId;
+
+      if (q1WinnerId && q2WinnerId && (finalMatch.team1Id !== q1WinnerId || finalMatch.team2Id !== q2WinnerId)) {
+        const t1 = room.teams.find((t) => t.id === q1WinnerId);
+        const t2 = room.teams.find((t) => t.id === q2WinnerId);
+
+        finalMatch.team1Id = q1WinnerId;
+        finalMatch.team2Id = q2WinnerId;
+        finalMatch.placeholderTeam1Text = undefined;
+        finalMatch.placeholderTeam2Text = undefined;
+        matchesChanged = true;
+
+        extraLogs.push({
+          id: `log-final-${Date.now()}`,
+          timestamp: Date.now(),
+          type: 'ANNOUNCEMENT',
+          playerId: 'final-lineup',
+          playerName: 'Grand Final Set',
+          amount: 0,
+          message: `👑 IPL CHAMPIONSHIP GRAND FINAL: ${t1?.shortName || 'Team 1'} vs ${t2?.shortName || 'Team 2'}! The ultimate battle for the IPL Trophy.`
+        });
+      }
+    }
+
+    // When Grand Final completes, crown champion
+    if (finalMatch && finalMatch.status === 'COMPLETED' && room.status !== 'COMPLETED') {
+      const champ = room.teams.find((t) => t.id === finalMatch.winnerId);
+      extraLogs.push({
+        id: `log-champ-${Date.now()}`,
+        timestamp: Date.now(),
+        type: 'ANNOUNCEMENT',
+        playerId: 'champion',
+        playerName: 'IPL Champions',
+        amount: 50000000,
+        message: `🎉 CHAMPIONS OF THE IPL: ${champ?.name || 'Grand Champions'} lift the prestigious IPL Trophy! ₹5.00 Cr championship bonus awarded!`
+      });
+
+      return {
+        ...room,
+        status: 'COMPLETED',
+        matches: [...matches],
+        auctionLogs: [...extraLogs, ...(room.auctionLogs || []).slice(0, 48)],
+        lastUpdated: Date.now()
+      };
+    }
+
+    if (matchesChanged) {
+      return {
+        ...room,
+        matches: [...matches],
+        auctionLogs: [...extraLogs, ...(room.auctionLogs || []).slice(0, 48)],
+        lastUpdated: Date.now()
+      };
+    }
+  }
+
+  return room;
 };
 
 // Calculate Orange Cap (Top Run Scorers) & Purple Cap (Top Wicket Takers)
@@ -952,13 +1152,15 @@ export const applyMatchPrizeToRoom = (
     m.id === finalizedMatch.id ? finalizedMatch : m
   );
 
-  const updatedRoom: RoomState = {
+  const intermediateRoom: RoomState = {
     ...room,
     teams: updatedTeams,
     matches: updatedMatches,
     auctionLogs: [prizeLog, ...(room.auctionLogs || []).slice(0, 48)],
     lastUpdated: Date.now()
   };
+
+  const updatedRoom = checkAndProgressPlayoffs(intermediateRoom);
 
   return {
     updatedRoom,

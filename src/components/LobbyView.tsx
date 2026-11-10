@@ -44,6 +44,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [copiedCode, setCopiedCode] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isJoining, setIsJoining] = useState(false);
 
   // 6-digit Room code generated for hosting
   const [hostedRoomCode, setHostedRoomCode] = useState<string>(() => generateRoomCode());
@@ -73,7 +74,14 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
     setHostedRoomCode(code);
   };
 
-  const handleCreateRoom = (e: React.FormEvent) => {
+  const extractRoomCode = (raw: string): string => {
+    if (!raw) return '';
+    const match = raw.match(/[A-Za-z0-9]{6}/);
+    if (match) return match[0].toUpperCase();
+    return raw.replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase();
+  };
+
+  const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
 
@@ -160,27 +168,29 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
       lastUpdated: Date.now()
     };
 
-    saveRoom(newRoom);
+    await saveRoom(newRoom);
     onEnterRoom(newRoom);
   };
 
   const handleJoinRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
-    const code = joinCodeInput.trim().toUpperCase();
-    if (!code || code.length !== 6) {
-      setErrorMsg('Please enter a valid 6-character room code.');
+    const cleanCode = extractRoomCode(joinCodeInput);
+    if (!cleanCode || cleanCode.length !== 6) {
+      setErrorMsg('Please enter a valid 6-character room code (e.g. IPL884).');
       return;
     }
 
+    setIsJoining(true);
     try {
-      const room = await getRoomByCode(code);
+      const room = await getRoomByCode(cleanCode);
       if (!room) {
-        setErrorMsg(`Room "${code}" not found. Verify the code or create a new room.`);
+        setErrorMsg(`Room "${cleanCode}" not found. Verify the 6-character code with the host.`);
+        setIsJoining(false);
         return;
       }
 
-      // In FULL_MULTIPLAYER: assign joining real player to an available franchise table if not yet assigned
+      // In multiplayer / solo rooms: assign joining real player to an available franchise table if not yet assigned
       if (currentUser) {
         const userExistingTeam = room.teams.find((t) => t.userId === currentUser.id);
         if (!userExistingTeam) {
@@ -194,7 +204,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
               ...updatedTeams[availableIndex],
               userId: currentUser.id,
               isBot: false,
-              isUserTeam: false
+              isUserTeam: true // Recognized as user's team on joining player's screen
             };
             updatedTeams[availableIndex] = claimedTeam;
 
@@ -205,7 +215,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
               playerId: room.playersPool[room.currentPlayerIndex]?.id || 'join',
               playerName: currentUser.username,
               amount: 0,
-              message: `👋 Real Player ${currentUser.username} has joined room ${code} and taken the ${claimedTeam.name} table!`
+              message: `👋 Real Player ${currentUser.username} has joined room ${cleanCode} and taken the ${claimedTeam.name} table!`
             };
 
             const updatedRoom: RoomState = {
@@ -216,15 +226,18 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             };
 
             saveRoom(updatedRoom);
+            setIsJoining(false);
             onEnterRoom(updatedRoom);
             return;
           }
         }
       }
 
+      setIsJoining(false);
       onEnterRoom(room);
     } catch {
-      setErrorMsg(`Could not connect to room "${code}". Please check your connection.`);
+      setIsJoining(false);
+      setErrorMsg(`Could not connect to room "${cleanCode}". Please check your connection.`);
     }
   };
 
@@ -300,13 +313,24 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                 <p className="text-sm font-semibold text-white">
                   Room: <span className="font-mono text-amber-400 font-bold">{activeRoom.code}</span> — {activeRoom.name}
                 </p>
+                {activeRoom.playersPool[activeRoom.currentPlayerIndex] && (
+                  <p className="text-xs text-amber-200 mt-1 flex items-center gap-1.5 flex-wrap">
+                    <span>Resuming Lot #{activeRoom.currentPlayerIndex + 1} of {activeRoom.playersPool.length}:</span>
+                    <strong className="text-white font-bold bg-amber-400/20 px-1.5 py-0.5 rounded border border-amber-400/30">
+                      {activeRoom.playersPool[activeRoom.currentPlayerIndex].name}
+                    </strong>
+                    <span className="text-slate-400">({activeRoom.playersPool[activeRoom.currentPlayerIndex].role.replace('_', ' ')})</span>
+                    <span>&bull; Base: {formatCurrency(activeRoom.playersPool[activeRoom.currentPlayerIndex].basePrice)}</span>
+                  </p>
+                )}
               </div>
             </div>
             <button
               onClick={() => onEnterRoom(activeRoom)}
-              className="px-4 py-2 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg shadow-sm transition-colors flex items-center gap-1.5"
+              className="px-4 py-2.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
             >
-              <Play className="w-4 h-4 fill-current" /> Re-enter Arena
+              <Play className="w-4 h-4 fill-current" />
+              Resume Auction at {activeRoom.playersPool[activeRoom.currentPlayerIndex]?.name || 'Current Lot'}
             </button>
           </div>
         )}
@@ -320,43 +344,51 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
               </h3>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-48 overflow-y-auto pr-1">
-              {userSavedRooms.map((room) => (
-                <div
-                  key={room.code}
-                  onClick={() => onEnterRoom(room)}
-                  className={`group cursor-pointer rounded-lg border p-3 flex items-center justify-between transition-all ${
-                    activeRoom?.code === room.code
-                      ? 'border-amber-400/50 bg-amber-400/10'
-                      : 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
-                  }`}
-                >
-                  <div className="min-w-0 pr-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-amber-400 text-xs">{room.code}</span>
-                      <span className="text-[10px] uppercase font-semibold text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">
-                        {room.status}
-                      </span>
+              {userSavedRooms.map((room) => {
+                const roomPlayer = room.playersPool[room.currentPlayerIndex];
+                return (
+                  <div
+                    key={room.code}
+                    onClick={() => onEnterRoom(room)}
+                    className={`group cursor-pointer rounded-lg border p-3 flex items-center justify-between transition-all ${
+                      activeRoom?.code === room.code
+                        ? 'border-amber-400/50 bg-amber-400/10'
+                        : 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="min-w-0 pr-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono font-bold text-amber-400 text-xs">{room.code}</span>
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">
+                          {room.status}
+                        </span>
+                        {roomPlayer && (
+                          <span className="text-[10px] text-amber-300 font-semibold bg-amber-400/15 px-1.5 py-0.5 rounded border border-amber-400/25 truncate">
+                            Lot #{room.currentPlayerIndex + 1}: {roomPlayer.name}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs font-bold text-white truncate mt-1">{room.name}</p>
                     </div>
-                    <p className="text-xs font-bold text-white truncate mt-0.5">{room.name}</p>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteSavedRoom(room.code, e)}
+                        title="Delete Campaign"
+                        className="p-1.5 text-slate-500 hover:text-rose-400 transition-colors rounded hover:bg-slate-800 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        className="px-2.5 py-1 text-[11px] font-bold text-slate-950 bg-amber-400 group-hover:bg-amber-300 rounded transition-colors cursor-pointer"
+                      >
+                        Resume
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={(e) => handleDeleteSavedRoom(room.code, e)}
-                      title="Delete Campaign"
-                      className="p-1.5 text-slate-500 hover:text-rose-400 transition-colors rounded hover:bg-slate-800"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      className="px-2.5 py-1 text-[11px] font-bold text-slate-950 bg-amber-400 group-hover:bg-amber-300 rounded transition-colors"
-                    >
-                      Resume
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -675,9 +707,18 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
               <div className="relative">
                 <input
                   type="text"
-                  maxLength={6}
+                  maxLength={20}
                   value={joinCodeInput}
-                  onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase();
+                    setJoinCodeInput(cleaned);
+                  }}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const pasted = e.clipboardData.getData('text');
+                    const code = extractRoomCode(pasted);
+                    setJoinCodeInput(code);
+                  }}
                   placeholder="e.g. IPL884"
                   className="w-full tracking-widest text-center text-3xl font-mono font-black uppercase py-4 rounded-xl bg-slate-950 border border-slate-700 text-amber-400 placeholder-slate-600 focus:outline-none focus:border-amber-400"
                   required
@@ -691,7 +732,8 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                     try {
                       const text = await navigator.clipboard.readText();
                       if (text) {
-                        setJoinCodeInput(text.trim().slice(0, 6).toUpperCase());
+                        const sanitized = extractRoomCode(text);
+                        setJoinCodeInput(sanitized);
                       }
                     } catch {
                       // clipboard permission
@@ -710,9 +752,19 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
 
             <button
               type="submit"
-              className="w-full py-3.5 px-6 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-sm uppercase tracking-wider shadow-md shadow-amber-400/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
+              disabled={isJoining}
+              className="w-full py-3.5 px-6 rounded-xl bg-amber-400 hover:bg-amber-300 disabled:opacity-60 text-slate-950 font-black text-sm uppercase tracking-wider shadow-md shadow-amber-400/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
-              <LogIn className="w-4 h-4" /> Connect to Room
+              {isJoining ? (
+                <>
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-950 border-t-transparent" />
+                  <span>Connecting to Room...</span>
+                </>
+              ) : (
+                <>
+                  <LogIn className="w-4 h-4" /> <span>Connect to Room</span>
+                </>
+              )}
             </button>
           </form>
         )}
